@@ -19,11 +19,4 @@ Clone jouable de Doodle Jump développé en assembleur x86-64 sous Windows.
 - Score
 - Boucle de jeu temps réel (60 FPS)
 
-## Pourquoi l’assembleur ?
-
-Ce projet démontre :
-
-- la maîtrise du bas niveau
-- la compréhension des API système
-- la capacité à construire un moteur minimal sans abstractions
 # Assembly_jump
