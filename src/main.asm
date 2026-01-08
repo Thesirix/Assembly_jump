@@ -1,7 +1,9 @@
 BITS 64
 DEFAULT REL
 
-
+; =========================
+; Imports Windows
+; =========================
 extern GetModuleHandleA
 extern LoadCursorA
 extern RegisterClassExA
@@ -14,8 +16,8 @@ extern DispatchMessageA
 extern DefWindowProcA
 extern PostQuitMessage
 extern ExitProcess
-extern InvalidateRect
 extern Sleep
+extern InvalidateRect
 
 extern BeginPaint
 extern EndPaint
@@ -23,7 +25,15 @@ extern StretchDIBits
 
 global _start
 
+; =========================
+; Imports jeu
+; =========================
+extern game_init
+extern game_update
 
+; =========================
+; Constantes
+; =========================
 %define CS_HREDRAW           0x0002
 %define CS_VREDRAW           0x0001
 %define IDC_ARROW            32512
@@ -33,6 +43,7 @@ global _start
 
 %define WM_DESTROY           0x0002
 %define WM_PAINT             0x000F
+%define WM_ERASEBKGND        0x0014
 %define WM_QUIT              0x0012
 
 %define PM_REMOVE            0x0001
@@ -43,11 +54,12 @@ global _start
 %define SCREEN_W 800
 %define SCREEN_H 600
 
-
+; =========================
+; Données
+; =========================
 section .data
 class_name   db "DoodleAsmWnd", 0
 window_title db "Doodle Jump - Assembly", 0
-
 
 bmi:
     dd 40
@@ -62,18 +74,29 @@ bmi:
     dd 0
     dd 0
 
-
+; =========================
+; BSS
+; =========================
 section .bss
 align 16
-wcx resb 80
 msg resb 48
 ps  resb 72
+wcx resb 80
 
 backbuffer resd SCREEN_W*SCREEN_H
 
+; joueur partagé
+global player_x
+global player_y
 player_x resd 1
 player_y resd 1
 
+; handle fenêtre
+hwnd_main resq 1
+
+; =========================
+; Utilitaires rendu
+; =========================
 section .text
 
 clear_backbuffer:
@@ -83,41 +106,44 @@ clear_backbuffer:
     rep stosd
     ret
 
-draw_player_rect:
-
+draw_player:
     lea rsi, [rel backbuffer]
-
     mov r12d, [rel player_x]
     mov r13d, [rel player_y]
 
     mov r14d, 24
-.y_loop:
+.y:
     mov r15d, 24
-.x_loop:
-
+.x:
     mov eax, r13d
-    mov edx, 24
-    sub edx, r14d
-    add eax, edx
+    add eax, 24
+    sub eax, r14d
     imul eax, SCREEN_W
 
     mov edx, r12d
-    mov ecx, 24
-    sub ecx, r15d
-    add edx, ecx
+    add edx, 24
+    sub edx, r15d
     add eax, edx
 
-    mov edx, 0x00FFFFFF
-    mov [rsi + rax*4], edx
+    mov dword [rsi + rax*4], 0x00FFFFFF
 
     dec r15d
-    jnz .x_loop
+    jnz .x
     dec r14d
-    jnz .y_loop
+    jnz .y
     ret
 
-
+; =========================
+; WndProc
+; =========================
 WndProc:
+    ; WM_ERASEBKGND -> return 1 (on empêche Windows d'effacer)
+    cmp edx, WM_ERASEBKGND
+    jne .check_destroy
+    mov eax, 1
+    ret
+
+.check_destroy:
     cmp edx, WM_DESTROY
     jne .check_paint
     xor ecx, ecx
@@ -129,39 +155,35 @@ WndProc:
     cmp edx, WM_PAINT
     jne .def
 
-
+    ; BeginPaint / StretchDIBits / EndPaint
     sub rsp, 200
-    mov r10, rcx               
-
+    mov r10, rcx
 
     mov rcx, r10
     lea rdx, [rel ps]
     call BeginPaint
-    mov r11, rax               
+    mov r11, rax
 
- 
-    mov rcx, r11               
-    xor edx, edx                
-    xor r8d, r8d                
-    mov r9d, SCREEN_W           
+    mov rcx, r11
+    xor edx, edx
+    xor r8d, r8d
+    mov r9d, SCREEN_W
 
-    mov dword [rsp+32], SCREEN_H       
-    mov dword [rsp+40], 0              
-    mov dword [rsp+48], 0               
-    mov dword [rsp+56], SCREEN_W        
-    mov dword [rsp+64], SCREEN_H        
+    mov dword [rsp+32], SCREEN_H
+    mov dword [rsp+40], 0
+    mov dword [rsp+48], 0
+    mov dword [rsp+56], SCREEN_W
+    mov dword [rsp+64], SCREEN_H
 
     lea rax, [rel backbuffer]
-    mov qword [rsp+72], rax            
-
+    mov qword [rsp+72], rax
     lea rax, [rel bmi]
-    mov qword [rsp+80], rax             
+    mov qword [rsp+80], rax
 
-    mov dword [rsp+88], DIB_RGB_COLORS  
-    mov dword [rsp+96], SRCCOPY         
+    mov dword [rsp+88], DIB_RGB_COLORS
+    mov dword [rsp+96], SRCCOPY
 
     call StretchDIBits
-
 
     mov rcx, r10
     lea rdx, [rel ps]
@@ -174,7 +196,9 @@ WndProc:
 .def:
     jmp DefWindowProcA
 
-
+; =========================
+; Entry
+; =========================
 _start:
     sub rsp, 40
 
@@ -187,35 +211,27 @@ _start:
     call LoadCursorA
     mov r13, rax
 
-
     mov dword [rel player_x], 380
-    mov dword [rel player_y], 260
+    mov dword [rel player_y], 100
 
-  
-    call clear_backbuffer
-    call draw_player_rect
+    call game_init
 
-
+    ; RegisterClassExA
     lea rbx, [rel wcx]
     mov dword [rbx+0], 80
     mov dword [rbx+4], CS_HREDRAW | CS_VREDRAW
     lea rax, [rel WndProc]
     mov qword [rbx+8], rax
-    mov dword [rbx+16], 0
-    mov dword [rbx+20], 0
     mov qword [rbx+24], r12
-    mov qword [rbx+32], 0
     mov qword [rbx+40], r13
-    mov qword [rbx+48], 0
-    mov qword [rbx+56], 0
+    mov qword [rbx+48], 0              ; hbrBackground = NULL
     lea rax, [rel class_name]
     mov qword [rbx+64], rax
-    mov qword [rbx+72], 0
 
     lea rcx, [rel wcx]
     call RegisterClassExA
 
-
+    ; CreateWindowExA
     xor ecx, ecx
     lea rdx, [rel class_name]
     lea r8,  [rel window_title]
@@ -225,25 +241,25 @@ _start:
     mov dword [rsp+40], CW_USEDEFAULT
     mov dword [rsp+48], SCREEN_W
     mov dword [rsp+56], SCREEN_H
-    mov qword [rsp+64], 0
-    mov qword [rsp+72], 0
     mov qword [rsp+80], r12
-    mov qword [rsp+88], 0
 
     call CreateWindowExA
-    mov r14, rax               
+    mov [rel hwnd_main], rax
 
-    mov rcx, r14
+    mov rcx, rax
     mov edx, SW_SHOW
     call ShowWindow
 
-    mov rcx, r14
+    mov rcx, [rel hwnd_main]
     call UpdateWindow
 
-
+; =========================
+; Boucle temps réel stable
+; =========================
 game_loop:
 
-.pump:
+    ; Pump messages
+.msg:
     lea rcx, [rel msg]
     xor edx, edx
     xor r8d, r8d
@@ -253,8 +269,7 @@ game_loop:
     call PeekMessageA
     add rsp, 40
     test eax, eax
-    jz .no_msg
-
+    jz .frame
 
     cmp dword [rel msg+8], WM_QUIT
     je .quit
@@ -263,25 +278,30 @@ game_loop:
     call TranslateMessage
     lea rcx, [rel msg]
     call DispatchMessageA
-    jmp .pump
+    jmp .msg
 
-.no_msg:
+.frame:
+    ; UPDATE
+    call game_update
 
+    ; RENDER backbuffer
     call clear_backbuffer
-    call draw_player_rect
+    call draw_player
 
- 
-    mov rcx, r14
+    ; Demander un WM_PAINT + forcer le paint tout de suite
+    mov rcx, [rel hwnd_main]
     xor edx, edx
     xor r8d, r8d
     call InvalidateRect
 
+    mov rcx, [rel hwnd_main]
+    call UpdateWindow
 
     mov ecx, 16
     call Sleep
+
     jmp game_loop
 
 .quit:
-    add rsp, 40
     xor ecx, ecx
     call ExitProcess
