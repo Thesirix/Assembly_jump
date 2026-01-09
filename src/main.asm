@@ -115,18 +115,36 @@ draw_player:
 .y:
     mov r15d, 24
 .x:
+    ; Calcul position Y du pixel
     mov eax, r13d
     add eax, 24
     sub eax, r14d
+    
+    ; *** CLIPPING Y ***
+    cmp eax, 0
+    jl .skip_pixel
+    cmp eax, SCREEN_H
+    jge .skip_pixel
+    
     imul eax, SCREEN_W
 
+    ; Calcul position X du pixel
     mov edx, r12d
     add edx, 24
     sub edx, r15d
+    
+    ; *** CLIPPING X ***
+    cmp edx, 0
+    jl .skip_pixel
+    cmp edx, SCREEN_W
+    jge .skip_pixel
+    
     add eax, edx
 
+    ; Dessiner le pixel (maintenant on est sûr qu'il est valide)
     mov dword [rsi + rax*4], 0x00FFFFFF
 
+.skip_pixel:
     dec r15d
     jnz .x
     dec r14d
