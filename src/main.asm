@@ -18,6 +18,7 @@ extern PostQuitMessage
 extern ExitProcess
 extern Sleep
 extern InvalidateRect
+extern platforms_render
 
 extern BeginPaint
 extern EndPaint
@@ -77,12 +78,13 @@ bmi:
 ; =========================
 ; BSS
 ; =========================
+
 section .bss
 align 16
 msg resb 48
 ps  resb 72
 wcx resb 80
-
+global backbuffer
 backbuffer resd SCREEN_W*SCREEN_H
 
 ; joueur partagé
@@ -305,6 +307,7 @@ game_loop:
     ; RENDER backbuffer
     call clear_backbuffer
     call draw_player
+    call platforms_render
 
     ; Demander un WM_PAINT + forcer le paint tout de suite
     mov rcx, [rel hwnd_main]

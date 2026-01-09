@@ -27,8 +27,11 @@ if errorlevel 1 goto :err
 nasm -f win64 "%SRC%\input.asm" -o input.obj
 if errorlevel 1 goto :err
 
+nasm -f win64 "%SRC%\platforms.asm" -o platforms.obj
+if errorlevel 1 goto :err
+
 REM ===== Link =====
-link main.obj game.obj physics.obj input.obj^
+link main.obj game.obj physics.obj input.obj platforms.obj^
  /LIBPATH:"%SDK_LIB%" ^
  kernel32.lib user32.lib gdi32.lib ^
  /SUBSYSTEM:WINDOWS ^

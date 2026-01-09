@@ -13,6 +13,7 @@ jump_force dd -18      ; impulsion de saut
 floor_y    dd 520      ; sol fictif (bas écran)
 
 section .bss
+global vel_y  
 vel_y resd 1           ; vitesse verticale
 
 section .text
