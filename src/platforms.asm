@@ -18,7 +18,7 @@ extern camera_y
 %define PLAYER_H 24
 %define PLATFORM_W 80
 %define PLATFORM_H 12
-%define MAX_PLATFORMS 12
+%define MAX_PLATFORMS 32 
 
 section .data
 rand_seed dd 12345
@@ -28,12 +28,11 @@ platforms_x resd MAX_PLATFORMS
 platforms_y resd MAX_PLATFORMS
 platforms_active resb MAX_PLATFORMS
 highest_platform_y resd 1
+highest_platform_x resd 1  ; AJOUT : On mémorise le X de la plateforme la plus haute
 
 section .text
 
-; =============================
-; Générateur pseudo-aléatoire
-; =============================
+; Générateur aléatoire
 random:
     push rbx
     mov eax, [rel rand_seed]
@@ -46,58 +45,42 @@ random:
     pop rbx
     ret
 
-; =============================
 ; Initialisation
-; =============================
 platforms_init:
     push rbx
     push r12
     push r13
     sub rsp, 40
     
-    ; Première plateforme sous le joueur
-    lea rbx, [rel platforms_x]
-    mov dword [rbx], 350        ; Centré à peu près
+    rdtsc
+    mov [rel rand_seed], eax
     
+    ; Reset
+    xor r12d, r12d
+    lea rbx, [rel platforms_active]
+.clear_loop:
+    mov byte [rbx + r12], 0
+    inc r12d
+    cmp r12d, MAX_PLATFORMS
+    jl .clear_loop
+    
+    ; Première plateforme fixe (Base)
+    lea rbx, [rel platforms_x]
+    mov dword [rbx], 350
     lea rbx, [rel platforms_y]
     mov dword [rbx], 520
-    
     lea rbx, [rel platforms_active]
     mov byte [rbx], 1
     
     mov dword [rel highest_platform_y], 520
+    mov dword [rel highest_platform_x], 350 ; Init du X
     
-    ; Générer les autres
+    ; Génération initiale
     mov r12d, 1
 .gen_loop:
     cmp r12d, MAX_PLATFORMS
     jge .done
-    
-    call random
-    xor edx, edx
-    mov ecx, SCREEN_W - PLATFORM_W
-    div ecx
-    mov r13d, edx
-    
-    lea rbx, [rel platforms_x]
-    mov [rbx + r12*4], r13d
-    
-    call random
-    xor edx, edx
-    mov ecx, 80
-    div ecx
-    add edx, 60
-    
-    mov eax, [rel highest_platform_y]
-    sub eax, edx
-    
-    lea rbx, [rel platforms_y]
-    mov [rbx + r12*4], eax
-    mov [rel highest_platform_y], eax
-    
-    lea rbx, [rel platforms_active]
-    mov byte [rbx + r12], 1
-    
+    call create_one_platform
     inc r12d
     jmp .gen_loop
     
@@ -108,9 +91,6 @@ platforms_init:
     pop rbx
     ret
 
-; =============================
-; Update
-; =============================
 platforms_update:
     sub rsp, 40
     call platforms_check_collision
@@ -119,9 +99,6 @@ platforms_update:
     add rsp, 40
     ret
 
-; =============================
-; Cleanup
-; =============================
 platforms_cleanup_old:
     push rbx
     push r12
@@ -130,6 +107,10 @@ platforms_cleanup_old:
     cmp r12d, MAX_PLATFORMS
     jge .done
     
+    lea rbx, [rel platforms_active]
+    cmp byte [rbx + r12], 0
+    je .next
+    
     lea rbx, [rel platforms_y]
     mov eax, [rbx + r12*4]
     
@@ -137,11 +118,11 @@ platforms_cleanup_old:
     sub eax, edx
     
     cmp eax, SCREEN_H + 50
-    jl .keep
+    jl .next
     
     lea rbx, [rel platforms_active]
     mov byte [rbx + r12], 0
-.keep:
+.next:
     inc r12d
     jmp .loop
 .done:
@@ -149,52 +130,78 @@ platforms_cleanup_old:
     pop rbx
     ret
 
-; =============================
-; Generate New
-; =============================
 platforms_generate_new:
     push rbx
     push r12
-    push r13
     sub rsp, 40
     
-    xor r12d, r12d
-    lea rbx, [rel platforms_active]
-.find_loop:
-    cmp r12d, MAX_PLATFORMS
-    jge .no_slot
-    cmp byte [rbx + r12], 0
-    je .found_slot
-    inc r12d
-    jmp .find_loop
-.no_slot:
-    add rsp, 40
-    pop r13
-    pop r12
-    pop rbx
-    ret
-    
-.found_slot:
     mov eax, [rel highest_platform_y]
     mov edx, [rel camera_y]
     sub eax, edx
-    cmp eax, 0 ; Si la plus haute est hors écran (en haut), on génère
-    jg .no_gen ; On attend qu'elle descende un peu
     
+    cmp eax, 0
+    jg .done
+    
+    xor r12d, r12d
+    lea rbx, [rel platforms_active]
+.find_slot:
+    cmp r12d, MAX_PLATFORMS
+    jge .done
+    cmp byte [rbx + r12], 0
+    je .found
+    inc r12d
+    jmp .find_slot
+    
+.found:
+    call create_one_platform
+    
+.done:
+    add rsp, 40
+    pop r12
+    pop rbx
+    ret
+
+; =============================================================
+; CRÉATION D'UNE PLATEFORME (Avec logique de "Chemin")
+; =============================================================
+create_one_platform:
+    ; Générer X basé sur la précédente (highest_platform_x)
+    ; On veut un écart entre -200 et +200 pixels
     call random
     xor edx, edx
-    mov ecx, SCREEN_W - PLATFORM_W
-    div ecx
-    mov r13d, edx
+    mov ecx, 400        ; Range total
+    div ecx             ; edx = 0..399
+    sub edx, 200        ; edx = -200..199
     
+    add edx, [rel highest_platform_x] ; Nouveau X théorique
+    
+    ; CLAMP (Garder dans l'écran)
+    ; Si < 0, on met à 0
+    cmp edx, 0
+    jge .check_max
+    mov edx, 0
+    jmp .save_x
+.check_max:
+    ; Si > 720, on met à 720
+    cmp edx, 720 ; (800 - 80)
+    jle .save_x
+    mov edx, 720
+.save_x:
+    mov r13d, edx ; X validé
+    
+    ; Sauvegarder ce X pour la suivante
+    mov [rel highest_platform_x], r13d
+    
+    ; Écrire dans le tableau
     lea rbx, [rel platforms_x]
     mov [rbx + r12*4], r13d
     
+    ; Générer Y (écart vertical proche)
     call random
     xor edx, edx
-    mov ecx, 90
+    mov ecx, 60
     div ecx
-    add edx, 50
+    add edx, 30
     
     mov eax, [rel highest_platform_y]
     sub eax, edx
@@ -205,17 +212,8 @@ platforms_generate_new:
     
     lea rbx, [rel platforms_active]
     mov byte [rbx + r12], 1
-    
-.no_gen:
-    add rsp, 40
-    pop r13
-    pop r12
-    pop rbx
     ret
 
-; =============================
-; COLLISION (CORRIGÉ)
-; =============================
 platforms_check_collision:
     push rbx
     push r12
@@ -235,20 +233,13 @@ platforms_check_collision:
     cmp byte [r13 + r12], 0
     je .next
     
-    ; 1. Récupérer X et Y de la plateforme
-    mov eax, [r14 + r12*4]      ; PLATFORM X
-    mov edx, [r15 + r12*4]      ; PLATFORM Y (Monde)
-    
-    ; --- CORRECTION CRITIQUE ---
-    ; On doit convertir la position MONDE de la plateforme en position ÉCRAN
-    ; pour la comparer avec le joueur qui est en coordonnées écran.
-    sub edx, [rel camera_y]     ; PLATFORM Y SCREEN
-    ; ---------------------------
+    mov eax, [r14 + r12*4]
+    mov edx, [r15 + r12*4]
+    sub edx, [rel camera_y]
 
     mov r8d, [rel player_x]
     mov r9d, [rel player_y]
     
-    ; Test X
     mov r10d, r8d
     add r10d, PLAYER_W
     cmp r10d, eax
@@ -259,26 +250,21 @@ platforms_check_collision:
     cmp r8d, r10d
     jge .next
     
-    ; Test Y
-    ; On vérifie si le bas du joueur touche le haut de la plateforme
     mov r11d, r9d
-    add r11d, PLAYER_H          ; Bas du joueur
+    add r11d, PLAYER_H
     
-    ; Tolérance de collision (on doit arriver par le haut)
-    cmp r11d, edx               ; Si bas joueur < haut plat -> au dessus
+    cmp r11d, edx
     jl .next
     
     mov r10d, edx
-    add r10d, 16                ; Tolérance (épaisseur collision)
+    add r10d, 16
     cmp r11d, r10d
     jg .next
     
-    ; Vérifier qu'on tombe (vitesse positive)
     mov eax, [rel vel_y]
     cmp eax, 0
     jle .next
     
-    ; REBOND
     mov dword [rel vel_y], -18
     
 .next:
@@ -293,9 +279,6 @@ platforms_check_collision:
     pop rbx
     ret
 
-; =============================
-; Render
-; =============================
 platforms_render:
     push rbx
     push r12
@@ -317,14 +300,11 @@ platforms_render:
     cmp byte [r13 + r12], 0
     je .next_platform
     
-    mov ebx, [r14 + r12*4]      ; X
-    mov edi, [r15 + r12*4]      ; Y Monde
-    
-    ; Conversion Monde -> Ecran
+    mov ebx, [r14 + r12*4]
+    mov edi, [r15 + r12*4]
     mov eax, [rel camera_y]
     sub edi, eax
     
-    ; Dessin (Pixel par pixel vert)
     mov r8d, PLATFORM_H
 .y_loop:
     mov r9d, PLATFORM_W
@@ -333,7 +313,6 @@ platforms_render:
     add eax, PLATFORM_H
     sub eax, r8d
     
-    ; Clipping Y
     cmp eax, 0
     jl .skip_pixel
     cmp eax, SCREEN_H
@@ -345,14 +324,13 @@ platforms_render:
     add r10d, PLATFORM_W
     sub r10d, r9d
     
-    ; Clipping X
     cmp r10d, 0
     jl .skip_pixel
     cmp r10d, SCREEN_W
     jge .skip_pixel
     
     add eax, r10d
-    mov dword [rdx + rax*4], 0x0000FF00 ; Vert
+    mov dword [rdx + rax*4], 0x0000FF00
     
 .skip_pixel:
     dec r9d
