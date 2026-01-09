@@ -17,7 +17,6 @@ extern camera_y
 %define SCREEN_H 600
 
 section .data
-; Chiffres 0-9
 digits_bitmap:
     db 1,1,1, 1,0,1, 1,0,1, 1,0,1, 1,1,1 ; 0
     db 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0 ; 1
@@ -30,8 +29,6 @@ digits_bitmap:
     db 1,1,1, 1,0,1, 1,1,1, 1,0,1, 1,1,1 ; 8
     db 1,1,1, 1,0,1, 1,1,1, 0,0,1, 1,1,1 ; 9
 
-; Lettres sélectionnées pour "GAME OVER" et "RESTART"
-; Index: 0:A, 1:E, 2:G, 3:M, 4:O, 5:R, 6:S, 7:T, 8:V, 9:!
 letters_bitmap:
     db 0,1,0, 1,0,1, 1,1,1, 1,0,1, 1,0,1 ; A (0)
     db 1,1,1, 1,0,0, 1,1,1, 1,0,0, 1,1,1 ; E (1)
@@ -49,7 +46,7 @@ global current_score
 current_score resd 1
 highest_y resd 1
 start_y   resd 1
-text_color resd 1 ; Couleur utilisée pour dessiner
+text_color resd 1
 
 section .text
 
@@ -72,7 +69,6 @@ score_update:
     mov ecx, [rel start_y]
     sub ecx, eax
     
-    ; Division par 2 pour score plus dynamique
     xor edx, edx
     mov eax, ecx
     mov ecx, 2
@@ -87,17 +83,18 @@ score_get:
     ret
 
 ; ==================================================
-; Affiche "GAME OVER"
+; Affiche "GAME OVER" (CENTRÉ)
 ; ==================================================
 draw_text_gameover:
     push r14
     push r15
-    mov dword [rel text_color], 0x00FFFFFF ; BLANC
+    mov dword [rel text_color], 0x00FFFFFF 
     
-    ; GAME: G(2), A(0), M(3), E(1)
-    mov r14d, 280 ; X
+    ; Largeur totale ~250px. Centre 400. Début = 275.
+    mov r14d, 275 ; X corrigé (était 280)
     mov r15d, 150 ; Y
     
+    ; "GAME"
     mov rax, 2 ; G
     call draw_letter_raw
     add r14d, 25
@@ -110,8 +107,10 @@ draw_text_gameover:
     mov rax, 1 ; E
     call draw_letter_raw
     
-    ; OVER: O(4), V(8), E(1), R(5), !(9)
-    mov r14d, 400 ; X (espace)
+    ; "OVER!" commence à 400 pile (400 - 125/2 + 62.5... non, 400 tout court)
+    ; Fin de GAME = 275 + 100 = 375.
+    ; Espace 25px -> 400.
+    mov r14d, 400 ; X Espace
     
     mov rax, 4 ; O
     call draw_letter_raw
@@ -133,16 +132,16 @@ draw_text_gameover:
     ret
 
 ; ==================================================
-; Affiche "RESTART"
+; Affiche "RESTART" (CENTRÉ)
 ; ==================================================
 draw_text_restart:
     push r14
     push r15
-    mov dword [rel text_color], 0x00FFFFFF ; BLANC
+    mov dword [rel text_color], 0x00FFFFFF
     
-    ; R(5), E(1), S(6), T(7), A(0), R(5), T(7)
-    mov r14d, 315 ; X (Centré dans le bouton)
-    mov r15d, 315 ; Y (Centré dans le bouton)
+    ; Largeur 175px. Centre 400. Début = 312.
+    mov r14d, 312 ; X corrigé (était 315)
+    mov r15d, 315 ; Y
     
     mov rax, 5 ; R
     call draw_letter_raw
@@ -169,7 +168,6 @@ draw_text_restart:
     pop r14
     ret
 
-; Dessine une lettre (Interne)
 draw_letter_raw:
     push rcx
     push rdx
@@ -189,18 +187,17 @@ draw_letter_raw:
     push r8
     push r9
     
-    ; Grossir x5 pour le texte
     mov r8d, r14d
-    lea eax, [edx*4] ; Espacement X (x4)
-    add eax, edx     ; +1 = x5
+    lea eax, [edx*4] 
+    add eax, edx     
     add r8d, eax
     
     mov r9d, r15d
-    lea eax, [ecx*4] ; Espacement Y (x4)
-    add eax, ecx     ; +1 = x5
+    lea eax, [ecx*4] 
+    add eax, ecx     
     add r9d, eax
     
-    call draw_fat_pixel_large ; Utilise variante large
+    call draw_fat_pixel_large
     pop r9
     pop r8
 .skip:
@@ -214,9 +211,6 @@ draw_letter_raw:
     pop rcx
     ret
 
-; ==================================================
-; DESSIN DE NOMBRES
-; ==================================================
 draw_number_at:
     push rbx
     push r12
@@ -228,7 +222,6 @@ draw_number_at:
     mov r14d, r8d  ; X
     mov r15d, r9d  ; Y
     
-    ; Utiliser couleur jaune par défaut si pas défini
     mov dword [rel text_color], 0x00FFD700 ; OR
 
     mov eax, ecx
@@ -317,7 +310,6 @@ draw_fat_pixel:
     cmp eax, SCREEN_W*SCREEN_H
     jge .sk
     
-    ; Force Noir pour Score en jeu
     mov dword [rdi + rax*4], 0x00000000
 .sk:
     inc r11d
@@ -330,7 +322,6 @@ draw_fat_pixel:
     pop rdi
     ret
 
-; Variante pour le Game Over (Plus gros + couleur variable)
 draw_fat_pixel_large:
     push rdi
     push rax
@@ -353,7 +344,7 @@ draw_fat_pixel_large:
     mov dword [rdi + rax*4], ebx
 .sk2:
     inc r11d
-    cmp r11d, 5 ; 5x5 pixels
+    cmp r11d, 5
     jl .dx
     inc r10d
     cmp r10d, 5
@@ -363,7 +354,6 @@ draw_fat_pixel_large:
     ret
 
 score_render:
-    ; Affiche score en haut à gauche (Noir)
     mov ecx, [rel current_score]
     mov r8d, 10
     mov r9d, 10

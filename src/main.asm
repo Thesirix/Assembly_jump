@@ -51,6 +51,8 @@ extern current_score
 %define SCREEN_W 800
 %define SCREEN_H 600
 %define VK_SPACE             0x20
+%define SPRITE_W 24
+%define SPRITE_H 24
 
 section .data
 class_name   db "DoodleAsmWnd", 0
@@ -68,6 +70,33 @@ bmi:
     dd 0
     dd 0
     dd 0
+
+; BITMAP POULPE
+doodle_bitmap:
+    db 0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0
+    db 0,0,0,0,0,0,2,2,1,1,1,1,1,1,1,1,2,2,0,0,0,0,0,0
+    db 0,0,0,0,0,2,1,1,5,5,1,1,5,5,1,1,1,1,2,0,0,0,0,0
+    db 0,0,0,0,2,1,1,5,5,5,1,5,5,1,1,1,1,1,1,2,0,0,0,0
+    db 0,0,0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0,0,0
+    db 0,0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0,0
+    db 0,0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0,0
+    db 0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0
+    db 0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0
+    db 0,2,1,1,1,3,3,3,1,1,1,1,1,1,3,3,3,1,1,1,1,1,2,0
+    db 2,1,1,1,3,3,3,3,1,1,1,1,1,3,3,3,3,1,1,1,1,1,1,2
+    db 2,1,1,1,3,3,3,3,1,1,1,1,1,3,3,3,3,1,1,1,1,1,1,2
+    db 2,1,1,1,1,3,3,1,1,1,3,1,1,1,3,3,1,1,1,1,1,1,1,2
+    db 2,1,1,1,4,4,4,1,1,3,1,3,1,1,4,4,4,1,1,1,1,1,1,2
+    db 2,1,1,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,1,1,1,1,1,2
+    db 2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2
+    db 2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2
+    db 2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2
+    db 0,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,0
+    db 0,2,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,1,2,0
+    db 0,0,2,1,1,1,2,0,2,1,1,1,1,2,0,2,1,1,1,1,1,2,0,0
+    db 0,0,2,1,1,1,2,0,2,1,1,1,1,2,0,0,2,1,1,1,2,0,0,0
+    db 0,0,0,2,2,2,0,0,0,2,2,2,2,0,0,0,0,2,2,2,0,0,0,0
+    db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 section .bss
 align 16
@@ -90,105 +119,152 @@ section .text
 clear_backbuffer:
     lea rdi, [rel backbuffer]
     mov rcx, SCREEN_W*SCREEN_H
-    mov eax, 0x0087CEEB
+    mov eax, 0x0087CEEB ; Bleu ciel
     rep stosd
     ret
 
 draw_player:
-    lea rsi, [rel backbuffer]
-    mov r12d, [rel player_x]
-    mov r13d, [rel player_y]
+    lea rsi, [rel backbuffer]   
+    lea rbx, [rel doodle_bitmap]
+    
+    mov r12d, [rel player_x]    
+    mov r13d, [rel player_y]    
 
-    mov r14d, 24
-.y:
-    mov r15d, 24
-.x:
+    xor r14d, r14d
+.y_loop:
+    xor r15d, r15d
+.x_loop:
+    mov eax, r14d
+    imul eax, SPRITE_W
+    add eax, r15d
+    mov cl, byte [rbx + rax]
+    
+    cmp cl, 0
+    je .next_pixel
+    
     mov eax, r13d
-    add eax, 24
-    sub eax, r14d
-    
+    add eax, r14d
     cmp eax, 0
-    jl .skip_pixel
+    jl .next_pixel
     cmp eax, SCREEN_H
-    jge .skip_pixel
-    
+    jge .next_pixel
     imul eax, SCREEN_W
-
+    
     mov edx, r12d
-    add edx, 24
-    sub edx, r15d
-    
+    add edx, r15d
     cmp edx, 0
-    jl .skip_pixel
+    jl .next_pixel
     cmp edx, SCREEN_W
-    jge .skip_pixel
-    
+    jge .next_pixel
     add eax, edx
-    mov dword [rsi + rax*4], 0x00FF0000
+    
+    cmp cl, 1
+    je .col_body
+    cmp cl, 2
+    je .col_outline
+    cmp cl, 3
+    je .col_eyes
+    cmp cl, 4
+    je .col_cheeks
+    cmp cl, 5
+    je .col_highlight
+    jmp .next_pixel
 
-.skip_pixel:
-    dec r15d
-    jnz .x
-    dec r14d
-    jnz .y
+.col_body:
+    mov dword [rsi + rax*4], 0x009B9BEE 
+    jmp .next_pixel
+.col_outline:
+    mov dword [rsi + rax*4], 0x002B2B55 
+    jmp .next_pixel
+.col_eyes:
+    mov dword [rsi + rax*4], 0x00000000
+    jmp .next_pixel
+.col_cheeks:
+    mov dword [rsi + rax*4], 0x00FF8888 
+    jmp .next_pixel
+.col_highlight:
+    mov dword [rsi + rax*4], 0x00FFFFDD
+    jmp .next_pixel
+
+.next_pixel:
+    inc r15d
+    cmp r15d, SPRITE_W
+    jl .x_loop
+    inc r14d
+    cmp r14d, SPRITE_H
+    jl .y_loop
     ret
 
-; =========================
-; DESSIN GAME OVER (CENTRÉ)
-; =========================
+; =============================================================
+; DESSIN GAME OVER (Avec Centrage Dynamique du Score)
+; =============================================================
 draw_game_over:
     lea rsi, [rel backbuffer]
     
     ; 1. Fond sombre
-    mov r12d, 100       ; Y Haut
+    mov r12d, 100       
 .y_rect:
-    mov r13d, 150       ; X Gauche
+    mov r13d, 150       
 .x_rect:
     mov eax, r12d
     imul eax, SCREEN_W
     add eax, r13d
-    mov dword [rsi + rax*4], 0x00333333 ; Gris foncé
+    mov dword [rsi + rax*4], 0x00333333 
     inc r13d
-    cmp r13d, 650       ; Largeur 500
+    cmp r13d, 650
     jl .x_rect
     inc r12d
-    cmp r12d, 500       ; Hauteur 400
+    cmp r12d, 500
     jl .y_rect
     
-    ; 2. Texte "GAME OVER" (X ajusté pour centrage 800px)
-    ; Largeur approx 225px. 800/2 - 112 = 288
-    mov r14d, 288       ; VARIABLE INTERNE dans draw_text_gameover à modifier ?
-    ; Non, draw_text_gameover utilise des valeurs en dur (hardcoded).
-    ; Je vais appeler ta fonction mais il faut que tu mettes à jour score.asm si tu veux changer X via paramètres.
-    ; MAIS ici, pour faire simple, je vais réécrire l'appel dans score.asm ou juste te donner le main.
-    
-    ; Correction : draw_text_gameover (dans score.asm) a des coordonnées en dur.
-    ; Pour éviter de modifier score.asm encore, on va laisser comme ça pour l'instant 
-    ; SAUF si je te redonne score.asm (ce qui n'est pas demandé ici).
-    ; ATTENDS ! J'ai vu que j'ai donné score.asm avant avec des valeurs "280".
-    ; Ici je corrige l'appel dans main ? Non, main appelle juste la fonction.
-    ; Donc c'est bon, le code précédent était à peu près centré.
-    
+    ; 2. Texte GAME OVER
     call draw_text_gameover
     
-    ; 3. Score Final (X ajusté)
+    ; 3. SCORE : Calcul du centrage
+    ; On compte le nombre de chiffres pour ajuster X
+    mov eax, [rel current_score]
+    mov r10d, 1     ; Compteur de chiffres (au moins 1)
+    mov ebx, 10
+    
+    ; Si score = 0, on garde compteur = 1
+    test eax, eax
+    jz .calc_pos
+    
+    ; Sinon on boucle pour compter
+    mov r11d, eax   ; Copie pour division
+    xor r10d, r10d  ; Reset count
+.count_digits:
+    xor edx, edx
+    mov eax, r11d
+    div ebx
+    mov r11d, eax
+    inc r10d
+    test r11d, r11d
+    jnz .count_digits
+    
+.calc_pos:
+    ; Largeur totale = Nombre_chiffres * 15
+    ; Offset = Largeur / 2
+    ; X = 400 - Offset
+    
+    mov eax, r10d
+    imul eax, 15    ; Largeur pixel
+    shr eax, 1      ; Diviser par 2
+    
+    mov r8d, 400    ; Centre écran
+    sub r8d, eax    ; X de départ
+    
     mov ecx, [rel current_score]
-    mov r8d, 380 ; Centré pour 3 chiffres (approx)
-    mov r9d, 230 ; Y
+    mov r9d, 230    ; Y position
     call draw_number_at
     
-    ; 4. Texte "RESTART" (X ajusté via la fonction dans score.asm ?)
-    ; Ah, draw_text_restart dans score.asm est aussi en dur.
-    ; C'est pas grave, le code précédent (315) était correct à 3px près.
-    
+    ; 4. Restart
     call draw_text_restart
-    
     ret
 
 WndProc:
     cmp edx, WM_LBUTTONDOWN
     je .check_click
-
     cmp edx, WM_ERASEBKGND
     jne .check_destroy
     mov eax, 1
@@ -198,15 +274,11 @@ WndProc:
     mov eax, [rel game_over]
     cmp eax, 1
     jne .def
-    
     mov rax, r9
-    
     mov rbx, rax
-    and rbx, 0xFFFF ; X
+    and rbx, 0xFFFF
     shr rax, 16
-    and rax, 0xFFFF ; Y
-    
-    ; Zone Bouton large pour le clic
+    and rax, 0xFFFF
     cmp rbx, 200
     jl .def
     cmp rbx, 600
@@ -215,7 +287,6 @@ WndProc:
     jl .def
     cmp rax, 450
     jg .def
-    
     call game_init
     xor eax, eax
     ret
@@ -265,21 +336,16 @@ WndProc:
 
 _start:
     sub rsp, 40
-
     xor ecx, ecx
     call GetModuleHandleA
     mov r12, rax
-
     xor ecx, ecx
     mov edx, IDC_ARROW
     call LoadCursorA
     mov r13, rax
-
     mov dword [rel player_x], 380
     mov dword [rel player_y], 100
-
     call game_init
-
     lea rbx, [rel wcx]
     mov dword [rbx+0], 80
     mov dword [rbx+4], CS_HREDRAW | CS_VREDRAW
@@ -292,7 +358,6 @@ _start:
     mov qword [rbx+64], rax
     lea rcx, [rel wcx]
     call RegisterClassExA
-
     xor ecx, ecx
     lea rdx, [rel class_name]
     lea r8,  [rel window_title]
@@ -304,11 +369,9 @@ _start:
     mov qword [rsp+80], r12
     call CreateWindowExA
     mov [rel hwnd_main], rax
-
     mov rcx, rax
     mov edx, SW_SHOW
     call ShowWindow
-
     mov rcx, [rel hwnd_main]
     call UpdateWindow
 
@@ -324,7 +387,6 @@ game_loop:
     add rsp, 40
     test eax, eax
     jz .frame
-
     cmp dword [rel msg+8], WM_QUIT
     je .quit
     lea rcx, [rel msg]
@@ -337,7 +399,6 @@ game_loop:
     mov eax, [rel game_over]
     cmp eax, 1
     je .handle_gameover
-
     call game_update
     jmp .render
 
@@ -355,7 +416,6 @@ game_loop:
     call platforms_render
     call draw_player
     call score_render
-    
     mov eax, [rel game_over]
     cmp eax, 1
     jne .paint
@@ -366,13 +426,10 @@ game_loop:
     xor edx, edx
     xor r8d, r8d
     call InvalidateRect
-
     mov rcx, [rel hwnd_main]
     call UpdateWindow
-
     mov ecx, 16
     call Sleep
-
     jmp game_loop
 
 .quit:
