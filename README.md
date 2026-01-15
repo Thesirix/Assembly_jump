@@ -1,22 +1,24 @@
-# Doodle Jump – Assembly x86-64
+# 🐇 Assembly_jump – Assembly x86-64
 
-Clone jouable de Doodle Jump développé en assembleur x86-64 sous Windows.
+A fully playable **Doodle Jump** clone developed entirely in **x86-64 assembly** for Windows.
 
-## Technologies
+## 💡 Why Assembly?
 
-- Langage : x86-64 Assembly (NASM)
-- API graphique : WinAPI (GDI)
-- Plateforme : Windows 64-bit
-- Aucun moteur
-- Aucune logique en C/C++
+I built this project out of a deep commitment to **truly understanding computer science** at its core. My goal was to strip away high-level abstractions to master machine architecture and learn how to write **radically optimized** software. This is not just a game; it's a deep dive into the bare metal.
 
-## Fonctionnalités
+## 🛠️ Technologies
 
-- Gravité et saut
-- Plateformes générées dynamiquement
-- Scroll vertical
-- Détection de collisions
-- Score
-- Boucle de jeu temps réel (60 FPS)
+- **Language:** x86-64 Assembly (NASM)
+- **Graphics API:** WinAPI (GDI)
+- **Platform:** Windows 64-bit
+- 🚫 **No Game Engine**
+- 🚫 **No C/C++ Logic**
 
-# Assembly_jump
+## ✨ Features
+
+- 📉 **Physics:** Gravity and jumping mechanics.
+- 🧱 **Procedural Generation:** Dynamic platform placement.
+- ⬆️ **Vertical Scrolling:** Infinite climbing.
+- 💥 **Collision Detection:** Pixel-perfect interactions.
+- 💯 **Scoring System:** Real-time score tracking.
+- 🔄 **Game Loop:** Custom real-time rendering loop.
