@@ -12,6 +12,9 @@ extern player_y
 extern vel_y
 extern camera_y
 
+; Import du son
+extern audio_play_jump
+
 %define SCREEN_W 800
 %define SCREEN_H 600
 %define PLAYER_W 24
@@ -28,7 +31,7 @@ platforms_x resd MAX_PLATFORMS
 platforms_y resd MAX_PLATFORMS
 platforms_active resb MAX_PLATFORMS
 highest_platform_y resd 1
-highest_platform_x resd 1  ; AJOUT : On mémorise le X de la plateforme la plus haute
+highest_platform_x resd 1
 
 section .text
 
@@ -73,7 +76,7 @@ platforms_init:
     mov byte [rbx], 1
     
     mov dword [rel highest_platform_y], 520
-    mov dword [rel highest_platform_x], 350 ; Init du X
+    mov dword [rel highest_platform_x], 350
     
     ; Génération initiale
     mov r12d, 1
@@ -161,55 +164,37 @@ platforms_generate_new:
     pop rbx
     ret
 
-; =============================================================
-; CRÉATION D'UNE PLATEFORME (Avec logique de "Chemin")
-; =============================================================
 create_one_platform:
-    ; Générer X basé sur la précédente (highest_platform_x)
-    ; On veut un écart entre -200 et +200 pixels
     call random
     xor edx, edx
-    mov ecx, 400        ; Range total
-    div ecx             ; edx = 0..399
-    sub edx, 200        ; edx = -200..199
+    mov ecx, 400        
+    div ecx             
+    sub edx, 200        
+    add edx, [rel highest_platform_x]
     
-    add edx, [rel highest_platform_x] ; Nouveau X théorique
-    
-    ; CLAMP (Garder dans l'écran)
-    ; Si < 0, on met à 0
     cmp edx, 0
     jge .check_max
     mov edx, 0
     jmp .save_x
 .check_max:
-    ; Si > 720, on met à 720
-    cmp edx, 720 ; (800 - 80)
+    cmp edx, 720
     jle .save_x
     mov edx, 720
 .save_x:
-    mov r13d, edx ; X validé
-    
-    ; Sauvegarder ce X pour la suivante
+    mov r13d, edx
     mov [rel highest_platform_x], r13d
-    
-    ; Écrire dans le tableau
     lea rbx, [rel platforms_x]
     mov [rbx + r12*4], r13d
-    
-    ; Générer Y (écart vertical proche)
     call random
     xor edx, edx
     mov ecx, 60
     div ecx
     add edx, 30
-    
     mov eax, [rel highest_platform_y]
     sub eax, edx
-    
     lea rbx, [rel platforms_y]
     mov [rbx + r12*4], eax
     mov [rel highest_platform_y], eax
-    
     lea rbx, [rel platforms_active]
     mov byte [rbx + r12], 1
     ret
@@ -265,7 +250,13 @@ platforms_check_collision:
     cmp eax, 0
     jle .next
     
+    ; --- COLLISION DETECTEE ---
     mov dword [rel vel_y], -18
+    
+    ; JOUER SON "BOUING"
+    sub rsp, 40
+    call audio_play_jump
+    add rsp, 40
     
 .next:
     inc r12d

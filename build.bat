@@ -10,6 +10,7 @@ REM ===== Crée le dossier build si absent =====
 if not exist "%OUT%" mkdir "%OUT%"
 
 REM ===== Windows SDK x64 =====
+REM Ajuste ce chemin si necessaire
 set SDK_LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64
 
 pushd "%OUT%"
@@ -43,11 +44,15 @@ echo Compilation de score.asm...
 nasm -f win64 "%SRC%\score.asm" -o score.obj
 if errorlevel 1 goto :err
 
+echo Compilation de audio.asm...
+nasm -f win64 "%SRC%\audio.asm" -o audio.obj
+if errorlevel 1 goto :err
+
 REM ===== Link =====
 echo Linkage...
-link main.obj game.obj physics.obj input.obj platforms.obj scroll.obj score.obj^
+link main.obj game.obj physics.obj input.obj platforms.obj scroll.obj score.obj audio.obj^
  /LIBPATH:"%SDK_LIB%" ^
- kernel32.lib user32.lib gdi32.lib ^
+ kernel32.lib user32.lib gdi32.lib winmm.lib ^
  /SUBSYSTEM:WINDOWS ^
  /ENTRY:_start ^
  /MACHINE:X64 ^
@@ -67,7 +72,7 @@ exit /b 0
 echo.
 echo ============================================
 echo BUILD FAILED - Verifiez les erreurs ci-dessus
-============================================
+echo ============================================
 echo.
 popd
 exit /b 1

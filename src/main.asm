@@ -21,36 +21,41 @@ extern BeginPaint
 extern EndPaint
 extern StretchDIBits
 
+; --- AUDIO INIT SEULEMENT ---
+extern audio_init
+extern audio_cleanup
+
 global _start
+global backbuffer
+global player_x
+global player_y
 
 extern game_init
 extern game_update
 extern platforms_render
 extern score_render
 extern game_over
-extern draw_number_at
-extern draw_text_gameover
-extern draw_text_restart
-extern current_score
 
-%define CS_HREDRAW           0x0002
-%define CS_VREDRAW           0x0001
-%define IDC_ARROW            32512
-%define SW_SHOW              5
-%define WS_OVERLAPPEDWINDOW  0x00CF0000
-%define CW_USEDEFAULT        0x80000000
-%define WM_DESTROY           0x0002
-%define WM_PAINT             0x000F
-%define WM_ERASEBKGND        0x0014
-%define WM_QUIT              0x0012
-%define WM_LBUTTONDOWN       0x0201
-%define PM_REMOVE            0x0001
-%define SRCCOPY              0x00CC0020
-%define DIB_RGB_COLORS       0
+; --- LE VOILA LE COUPABLE ---
+extern draw_game_over 
 
 %define SCREEN_W 800
 %define SCREEN_H 600
-%define VK_SPACE             0x20
+%define CS_HREDRAW 0x0002
+%define CS_VREDRAW 0x0001
+%define IDC_ARROW  32512
+%define SW_SHOW    5
+%define WS_OVERLAPPEDWINDOW 0x00CF0000
+%define CW_USEDEFAULT 0x80000000
+%define WM_DESTROY 0x0002
+%define WM_PAINT   0x000F
+%define WM_ERASEBKGND 0x0014
+%define WM_QUIT    0x0012
+%define WM_LBUTTONDOWN 0x0201
+%define PM_REMOVE  0x0001
+%define SRCCOPY    0x00CC0020
+%define DIB_RGB_COLORS 0
+%define VK_SPACE   0x20
 %define SPRITE_W 24
 %define SPRITE_H 24
 
@@ -71,7 +76,6 @@ bmi:
     dd 0
     dd 0
 
-; BITMAP POULPE
 doodle_bitmap:
     db 0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0
     db 0,0,0,0,0,0,2,2,1,1,1,1,1,1,1,1,2,2,0,0,0,0,0,0
@@ -104,11 +108,7 @@ msg resb 48
 ps  resb 72
 wcx resb 80
 
-global backbuffer
 backbuffer resd SCREEN_W*SCREEN_H
-
-global player_x
-global player_y
 player_x resd 1
 player_y resd 1
 
@@ -119,17 +119,15 @@ section .text
 clear_backbuffer:
     lea rdi, [rel backbuffer]
     mov rcx, SCREEN_W*SCREEN_H
-    mov eax, 0x0087CEEB ; Bleu ciel
+    mov eax, 0x0087CEEB 
     rep stosd
     ret
 
 draw_player:
     lea rsi, [rel backbuffer]   
     lea rbx, [rel doodle_bitmap]
-    
     mov r12d, [rel player_x]    
     mov r13d, [rel player_y]    
-
     xor r14d, r14d
 .y_loop:
     xor r15d, r15d
@@ -138,10 +136,8 @@ draw_player:
     imul eax, SPRITE_W
     add eax, r15d
     mov cl, byte [rbx + rax]
-    
     cmp cl, 0
     je .next_pixel
-    
     mov eax, r13d
     add eax, r14d
     cmp eax, 0
@@ -149,7 +145,6 @@ draw_player:
     cmp eax, SCREEN_H
     jge .next_pixel
     imul eax, SCREEN_W
-    
     mov edx, r12d
     add edx, r15d
     cmp edx, 0
@@ -157,7 +152,6 @@ draw_player:
     cmp edx, SCREEN_W
     jge .next_pixel
     add eax, edx
-    
     cmp cl, 1
     je .col_body
     cmp cl, 2
@@ -169,7 +163,6 @@ draw_player:
     cmp cl, 5
     je .col_highlight
     jmp .next_pixel
-
 .col_body:
     mov dword [rsi + rax*4], 0x009B9BEE 
     jmp .next_pixel
@@ -185,7 +178,6 @@ draw_player:
 .col_highlight:
     mov dword [rsi + rax*4], 0x00FFFFDD
     jmp .next_pixel
-
 .next_pixel:
     inc r15d
     cmp r15d, SPRITE_W
@@ -195,73 +187,6 @@ draw_player:
     jl .y_loop
     ret
 
-; =============================================================
-; DESSIN GAME OVER (Avec Centrage Dynamique du Score)
-; =============================================================
-draw_game_over:
-    lea rsi, [rel backbuffer]
-    
-    ; 1. Fond sombre
-    mov r12d, 100       
-.y_rect:
-    mov r13d, 150       
-.x_rect:
-    mov eax, r12d
-    imul eax, SCREEN_W
-    add eax, r13d
-    mov dword [rsi + rax*4], 0x00333333 
-    inc r13d
-    cmp r13d, 650
-    jl .x_rect
-    inc r12d
-    cmp r12d, 500
-    jl .y_rect
-    
-    ; 2. Texte GAME OVER
-    call draw_text_gameover
-    
-    ; 3. SCORE : Calcul du centrage
-    ; On compte le nombre de chiffres pour ajuster X
-    mov eax, [rel current_score]
-    mov r10d, 1     ; Compteur de chiffres (au moins 1)
-    mov ebx, 10
-    
-    ; Si score = 0, on garde compteur = 1
-    test eax, eax
-    jz .calc_pos
-    
-    ; Sinon on boucle pour compter
-    mov r11d, eax   ; Copie pour division
-    xor r10d, r10d  ; Reset count
-.count_digits:
-    xor edx, edx
-    mov eax, r11d
-    div ebx
-    mov r11d, eax
-    inc r10d
-    test r11d, r11d
-    jnz .count_digits
-    
-.calc_pos:
-    ; Largeur totale = Nombre_chiffres * 15
-    ; Offset = Largeur / 2
-    ; X = 400 - Offset
-    
-    mov eax, r10d
-    imul eax, 15    ; Largeur pixel
-    shr eax, 1      ; Diviser par 2
-    
-    mov r8d, 400    ; Centre écran
-    sub r8d, eax    ; X de départ
-    
-    mov ecx, [rel current_score]
-    mov r9d, 230    ; Y position
-    call draw_number_at
-    
-    ; 4. Restart
-    call draw_text_restart
-    ret
-
 WndProc:
     cmp edx, WM_LBUTTONDOWN
     je .check_click
@@ -269,7 +194,6 @@ WndProc:
     jne .check_destroy
     mov eax, 1
     ret
-
 .check_click:
     mov eax, [rel game_over]
     cmp eax, 1
@@ -290,7 +214,6 @@ WndProc:
     call game_init
     xor eax, eax
     ret
-
 .check_destroy:
     cmp edx, WM_DESTROY
     jne .check_paint
@@ -298,7 +221,6 @@ WndProc:
     call PostQuitMessage
     xor eax, eax
     ret
-
 .check_paint:
     cmp edx, WM_PAINT
     jne .def
@@ -330,7 +252,6 @@ WndProc:
     add rsp, 200
     xor eax, eax
     ret
-
 .def:
     jmp DefWindowProcA
 
@@ -343,6 +264,7 @@ _start:
     mov edx, IDC_ARROW
     call LoadCursorA
     mov r13, rax
+    call audio_init
     mov dword [rel player_x], 380
     mov dword [rel player_y], 100
     call game_init
@@ -394,14 +316,12 @@ game_loop:
     lea rcx, [rel msg]
     call DispatchMessageA
     jmp .msg
-
 .frame:
     mov eax, [rel game_over]
     cmp eax, 1
     je .handle_gameover
     call game_update
     jmp .render
-
 .handle_gameover:
     mov rcx, VK_SPACE
     call GetAsyncKeyState
@@ -410,7 +330,6 @@ game_loop:
     call game_init
     mov ecx, 200
     call Sleep
-
 .render:
     call clear_backbuffer
     call platforms_render
@@ -420,7 +339,6 @@ game_loop:
     cmp eax, 1
     jne .paint
     call draw_game_over
-
 .paint:
     mov rcx, [rel hwnd_main]
     xor edx, edx
@@ -431,7 +349,7 @@ game_loop:
     mov ecx, 16
     call Sleep
     jmp game_loop
-
 .quit:
+    call audio_cleanup
     xor ecx, ecx
     call ExitProcess

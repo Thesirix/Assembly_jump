@@ -10,6 +10,9 @@ extern player_y
 extern player_x
 extern camera_y
 
+; Import du son
+extern audio_play_jump
+
 section .data
 gravity    dd 1
 jump_force dd -18
@@ -44,16 +47,12 @@ physics_update:
 
     ; Vérifier mort (chute)
     mov eax, [rel player_y]
-    
-    ; Si on tombe tout en bas de l'écran (quel que soit le scroll)
-    ; On considère mort si player_y > 600 (hauteur écran)
-    ; ATTENTION: player_y est en coordonnées écran grâce au scroll.asm
     cmp eax, 600
     jle .check_floor
     
     ; --- GAME OVER ---
     mov dword [rel game_over], 1
-    ret ; On retourne simplement, le Main gère l'affichage
+    ret 
 
 .check_floor:
     ; Au tout début (camera_y = 0), on a un sol invisible pour ne pas mourir direct
@@ -70,6 +69,9 @@ physics_update:
     mov [rel player_y], eax
     mov eax, [rel jump_force]
     mov [rel vel_y], eax
+    
+    ; JOUER SON "BOUING"
+    call audio_play_jump
 
 .done:
     ret
