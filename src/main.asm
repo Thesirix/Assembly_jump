@@ -21,11 +21,11 @@ extern BeginPaint
 extern EndPaint
 extern StretchDIBits
 
-; --- AUDIO INIT SEULEMENT ---
-extern audio_init
-extern audio_cleanup
+; --- AUDIO (noms du nouveau projet qui fonctionne) ---
+extern Audio_Init
+extern Audio_Cleanup
 
-global _start
+global Start
 global backbuffer
 global player_x
 global player_y
@@ -35,29 +35,27 @@ extern game_update
 extern platforms_render
 extern score_render
 extern game_over
+extern draw_game_over
 
-; --- LE VOILA LE COUPABLE ---
-extern draw_game_over 
-
-%define SCREEN_W 800
-%define SCREEN_H 600
-%define CS_HREDRAW 0x0002
-%define CS_VREDRAW 0x0001
-%define IDC_ARROW  32512
-%define SW_SHOW    5
+%define SCREEN_W        800
+%define SCREEN_H        600
+%define CS_HREDRAW      0x0002
+%define CS_VREDRAW      0x0001
+%define IDC_ARROW       32512
+%define SW_SHOW         5
 %define WS_OVERLAPPEDWINDOW 0x00CF0000
-%define CW_USEDEFAULT 0x80000000
-%define WM_DESTROY 0x0002
-%define WM_PAINT   0x000F
-%define WM_ERASEBKGND 0x0014
-%define WM_QUIT    0x0012
-%define WM_LBUTTONDOWN 0x0201
-%define PM_REMOVE  0x0001
-%define SRCCOPY    0x00CC0020
-%define DIB_RGB_COLORS 0
-%define VK_SPACE   0x20
-%define SPRITE_W 24
-%define SPRITE_H 24
+%define CW_USEDEFAULT   0x80000000
+%define WM_DESTROY      0x0002
+%define WM_PAINT        0x000F
+%define WM_ERASEBKGND   0x0014
+%define WM_QUIT         0x0012
+%define WM_LBUTTONDOWN  0x0201
+%define PM_REMOVE       0x0001
+%define SRCCOPY         0x00CC0020
+%define DIB_RGB_COLORS  0
+%define VK_SPACE        0x20
+%define SPRITE_W        24
+%define SPRITE_H        24
 
 section .data
 class_name   db "DoodleAsmWnd", 0
@@ -119,15 +117,15 @@ section .text
 clear_backbuffer:
     lea rdi, [rel backbuffer]
     mov rcx, SCREEN_W*SCREEN_H
-    mov eax, 0x0087CEEB 
+    mov eax, 0x0087CEEB
     rep stosd
     ret
 
 draw_player:
-    lea rsi, [rel backbuffer]   
+    lea rsi, [rel backbuffer]
     lea rbx, [rel doodle_bitmap]
-    mov r12d, [rel player_x]    
-    mov r13d, [rel player_y]    
+    mov r12d, [rel player_x]
+    mov r13d, [rel player_y]
     xor r14d, r14d
 .y_loop:
     xor r15d, r15d
@@ -164,16 +162,16 @@ draw_player:
     je .col_highlight
     jmp .next_pixel
 .col_body:
-    mov dword [rsi + rax*4], 0x009B9BEE 
+    mov dword [rsi + rax*4], 0x009B9BEE
     jmp .next_pixel
 .col_outline:
-    mov dword [rsi + rax*4], 0x002B2B55 
+    mov dword [rsi + rax*4], 0x002B2B55
     jmp .next_pixel
 .col_eyes:
     mov dword [rsi + rax*4], 0x00000000
     jmp .next_pixel
 .col_cheeks:
-    mov dword [rsi + rax*4], 0x00FF8888 
+    mov dword [rsi + rax*4], 0x00FF8888
     jmp .next_pixel
 .col_highlight:
     mov dword [rsi + rax*4], 0x00FFFFDD
@@ -255,7 +253,7 @@ WndProc:
 .def:
     jmp DefWindowProcA
 
-_start:
+Start:
     sub rsp, 40
     xor ecx, ecx
     call GetModuleHandleA
@@ -264,10 +262,14 @@ _start:
     mov edx, IDC_ARROW
     call LoadCursorA
     mov r13, rax
-    call audio_init
+
+    ; --- AUDIO INIT (noms du nouveau) ---
+    call Audio_Init
+
     mov dword [rel player_x], 380
     mov dword [rel player_y], 100
     call game_init
+
     lea rbx, [rel wcx]
     mov dword [rbx+0], 80
     mov dword [rbx+4], CS_HREDRAW | CS_VREDRAW
@@ -280,6 +282,7 @@ _start:
     mov qword [rbx+64], rax
     lea rcx, [rel wcx]
     call RegisterClassExA
+
     xor ecx, ecx
     lea rdx, [rel class_name]
     lea r8,  [rel window_title]
@@ -291,6 +294,7 @@ _start:
     mov qword [rsp+80], r12
     call CreateWindowExA
     mov [rel hwnd_main], rax
+
     mov rcx, rax
     mov edx, SW_SHOW
     call ShowWindow
@@ -316,12 +320,14 @@ game_loop:
     lea rcx, [rel msg]
     call DispatchMessageA
     jmp .msg
+
 .frame:
     mov eax, [rel game_over]
     cmp eax, 1
     je .handle_gameover
     call game_update
     jmp .render
+
 .handle_gameover:
     mov rcx, VK_SPACE
     call GetAsyncKeyState
@@ -330,6 +336,7 @@ game_loop:
     call game_init
     mov ecx, 200
     call Sleep
+
 .render:
     call clear_backbuffer
     call platforms_render
@@ -339,6 +346,7 @@ game_loop:
     cmp eax, 1
     jne .paint
     call draw_game_over
+
 .paint:
     mov rcx, [rel hwnd_main]
     xor edx, edx
@@ -349,7 +357,9 @@ game_loop:
     mov ecx, 16
     call Sleep
     jmp game_loop
+
 .quit:
-    call audio_cleanup
+    ; --- AUDIO CLEANUP (noms du nouveau) ---
+    call Audio_Cleanup
     xor ecx, ecx
     call ExitProcess
