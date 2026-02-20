@@ -26,6 +26,15 @@ extern QueryPerformanceCounter
 extern QueryPerformanceFrequency
 extern timeBeginPeriod          ; winmm.lib (déjà linké)
 
+; --- Threading ---
+extern WaitForSingleObject
+extern SetEvent
+extern threads_init
+extern threads_shutdown
+extern evt_frame_ready
+extern evt_render_done
+extern thread_shutdown
+
 ; --- AUDIO (noms du nouveau projet qui fonctionne) ---
 extern Audio_Init
 extern Audio_Cleanup
@@ -34,6 +43,9 @@ global Start
 global backbuffer
 global player_x
 global player_y
+global hwnd_main
+global bmi
+global front_buffer
 
 extern game_init
 extern game_update
@@ -106,19 +118,21 @@ doodle_bitmap:
     db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 section .bss
-align 16
+alignb 16
 msg resb 48
 ps  resb 72
 wcx resb 80
 
 backbuffer resd SCREEN_W*SCREEN_H
+alignb 16
+front_buffer resd SCREEN_W*SCREEN_H
 player_x resd 1
 player_y resd 1
 
 hwnd_main resq 1
 
 ; --- Variables Fixed Timestep ---
-align 8
+alignb 8
 qpc_freq        resq 1   ; ticks/seconde (QueryPerformanceFrequency)
 qpc_last        resq 1   ; timestamp dernière frame
 qpc_now_buf     resq 1   ; buffer lecture QPC
@@ -234,32 +248,15 @@ WndProc:
 .check_paint:
     cmp edx, WM_PAINT
     jne .def
-    sub rsp, 200
+    ; Render thread handles StretchDIBits via GetDC — just validate the region
+    sub rsp, 40
     mov r10, rcx
-    mov rcx, r10
     lea rdx, [rel ps]
     call BeginPaint
-    mov r11, rax
-    mov rcx, r11
-    xor edx, edx
-    xor r8d, r8d
-    mov r9d, SCREEN_W
-    mov dword [rsp+32], SCREEN_H
-    mov dword [rsp+40], 0
-    mov dword [rsp+48], 0
-    mov dword [rsp+56], SCREEN_W
-    mov dword [rsp+64], SCREEN_H
-    lea rax, [rel backbuffer]
-    mov qword [rsp+72], rax
-    lea rax, [rel bmi]
-    mov qword [rsp+80], rax
-    mov dword [rsp+88], DIB_RGB_COLORS
-    mov dword [rsp+96], SRCCOPY
-    call StretchDIBits
     mov rcx, r10
     lea rdx, [rel ps]
     call EndPaint
-    add rsp, 200
+    add rsp, 40
     xor eax, eax
     ret
 .def:
@@ -323,6 +320,9 @@ Start:
     call ShowWindow
     mov rcx, [rel hwnd_main]
     call UpdateWindow
+
+    ; --- Initialize worker threads (render, audio, platgen) ---
+    call threads_init
 
 game_loop:
 .msg:
@@ -412,25 +412,49 @@ game_loop:
     call score_render
     mov eax, [rel game_over]
     cmp eax, 1
-    jne .paint
+    jne .submit_frame
     call draw_game_over
 
-.paint:
-    mov rcx, [rel hwnd_main]
-    xor edx, edx
-    xor r8d, r8d
-    call InvalidateRect
-    mov rcx, [rel hwnd_main]
-    call UpdateWindow
+.submit_frame:
+    ; --- Double-buffer : copier backbuffer → front_buffer si render thread prêt ---
+    ; Non-blocking check: is the render thread done with the previous frame?
+    sub rsp, 40
+    mov rcx, [rel evt_render_done]
+    xor edx, edx                   ; 0 = no wait, just check
+    call WaitForSingleObject
+    add rsp, 40
+    cmp eax, 258                    ; WAIT_TIMEOUT = render still busy
+    je .skip_copy                   ; Skip copy, reuse old front_buffer
+
+    ; Copy backbuffer → front_buffer (800×600 dwords = 1,920,000 bytes)
+    push rsi
+    push rdi
+    push rcx
+    lea rsi, [rel backbuffer]
+    lea rdi, [rel front_buffer]
+    mov rcx, SCREEN_W * SCREEN_H
+    rep movsd
+    pop rcx
+    pop rdi
+    pop rsi
+
+.skip_copy:
+    ; Signal render thread: new frame ready in front_buffer
+    sub rsp, 40
+    mov rcx, [rel evt_frame_ready]
+    call SetEvent
+    add rsp, 40
 
     ; Sleep(1) : céder le CPU 1ms (pas de spin à 100%)
-    ; Le QPC mesure le vrai temps écoulé donc aucune dérive
     mov ecx, 1
     call Sleep
 
     jmp game_loop
 
 .quit:
+    ; --- Shutdown worker threads (render, audio, platgen) ---
+    call threads_shutdown
+
     ; --- AUDIO CLEANUP (noms du nouveau) ---
     call Audio_Cleanup
     xor ecx, ecx

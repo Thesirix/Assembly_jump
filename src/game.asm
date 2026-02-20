@@ -14,9 +14,11 @@ extern scroll_update
 extern score_init
 extern score_update
 
-; --- IMPORT AUDIO ---
-extern audio_update_music
-extern audio_stop_music
+; --- IMPORT AUDIO (via thread ring buffer) ---
+extern audio_post_cmd
+%define CMD_PLAY_JUMP    1
+%define CMD_UPDATE_MUSIC 2
+%define CMD_STOP_MUSIC   3
 
 extern player_y
 extern player_x
@@ -35,8 +37,9 @@ game_init:
     call score_init
     
     ; RESET MUSIQUE (Silence + Rembobinage au début)
-    sub rsp, 40       ; Alignement sécu
-    call audio_stop_music
+    sub rsp, 40
+    mov ecx, CMD_STOP_MUSIC
+    call audio_post_cmd
     add rsp, 40
     ret
 
@@ -55,14 +58,16 @@ game_update:
     call score_update
     
     ; --- MUSIQUE (Jeu en cours) ---
-    sub rsp, 40       ; Alignement sécu
-    call audio_update_music
+    sub rsp, 40
+    mov ecx, CMD_UPDATE_MUSIC
+    call audio_post_cmd
     add rsp, 40
     ret
 
 .stop_sound:
     ; Le jeu vient de finir, on coupe la note coincée
     sub rsp, 40
-    call audio_stop_music
+    mov ecx, CMD_STOP_MUSIC
+    call audio_post_cmd
     add rsp, 40
     ret

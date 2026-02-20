@@ -5,6 +5,10 @@ global platforms_init
 global platforms_update
 global platforms_render
 global platforms_check_collision
+global random
+global highest_platform_y
+global highest_platform_x
+global rand_seed
 
 extern backbuffer
 extern player_x
@@ -12,8 +16,13 @@ extern player_y
 extern vel_y
 extern camera_y
 
-; Import du son
-extern audio_play_jump
+; Import du son (via thread ring buffer)
+extern audio_post_cmd
+%define CMD_PLAY_JUMP 1
+
+; Import du platform pool (thread.asm)
+extern platpool_consume
+extern platpool_request
 
 %define SCREEN_W 800
 %define SCREEN_H 600
@@ -136,15 +145,17 @@ platforms_cleanup_old:
 platforms_generate_new:
     push rbx
     push r12
+    push r13
+    push r14
     sub rsp, 40
-    
+
     mov eax, [rel highest_platform_y]
     mov edx, [rel camera_y]
     sub eax, edx
-    
+
     cmp eax, 0
     jg .done
-    
+
     xor r12d, r12d
     lea rbx, [rel platforms_active]
 .find_slot:
@@ -154,12 +165,39 @@ platforms_generate_new:
     je .found
     inc r12d
     jmp .find_slot
-    
+
 .found:
+    ; Try to consume from pre-generated pool first
+    call platpool_consume
+    test ecx, ecx
+    jz .fallback
+
+    ; Got a platform from pool: eax=x, edx=y
+    mov r13d, eax
+    mov r14d, edx
+    lea rbx, [rel platforms_x]
+    mov [rbx + r12*4], r13d
+    lea rbx, [rel platforms_y]
+    mov [rbx + r12*4], r14d
+    lea rbx, [rel platforms_active]
+    mov byte [rbx + r12], 1
+
+    ; Update tracking
+    mov [rel highest_platform_x], r13d
+    mov [rel highest_platform_y], r14d
+
+    ; Request more generation if pool is getting low
+    call platpool_request
+    jmp .done
+
+.fallback:
+    ; Pool empty — fall back to synchronous generation
     call create_one_platform
-    
+
 .done:
     add rsp, 40
+    pop r14
+    pop r13
     pop r12
     pop rbx
     ret
@@ -253,9 +291,10 @@ platforms_check_collision:
     ; --- COLLISION DETECTEE ---
     mov dword [rel vel_y], -18
     
-    ; JOUER SON "BOUING"
+    ; JOUER SON "BOUING" (post to audio thread)
     sub rsp, 40
-    call audio_play_jump
+    mov ecx, CMD_PLAY_JUMP
+    call audio_post_cmd
     add rsp, 40
     
 .next:

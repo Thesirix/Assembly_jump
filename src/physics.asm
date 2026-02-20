@@ -10,8 +10,9 @@ extern player_y
 extern player_x
 extern camera_y
 
-; Import du son
-extern audio_play_jump
+; Import du son (via thread ring buffer)
+extern audio_post_cmd
+%define CMD_PLAY_JUMP 1
 
 section .data
 gravity    dd 1
@@ -70,8 +71,11 @@ physics_update:
     mov eax, [rel jump_force]
     mov [rel vel_y], eax
     
-    ; JOUER SON "BOUING"
-    call audio_play_jump
+    ; JOUER SON "BOUING" (post to audio thread)
+    sub rsp, 40
+    mov ecx, CMD_PLAY_JUMP
+    call audio_post_cmd
+    add rsp, 40
 
 .done:
     ret
