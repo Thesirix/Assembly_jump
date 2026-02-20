@@ -21,6 +21,11 @@ extern BeginPaint
 extern EndPaint
 extern StretchDIBits
 
+; --- Timer précision ---
+extern QueryPerformanceCounter
+extern QueryPerformanceFrequency
+extern timeBeginPeriod          ; winmm.lib (déjà linké)
+
 ; --- AUDIO (noms du nouveau projet qui fonctionne) ---
 extern Audio_Init
 extern Audio_Cleanup
@@ -111,6 +116,13 @@ player_x resd 1
 player_y resd 1
 
 hwnd_main resq 1
+
+; --- Variables Fixed Timestep ---
+align 8
+qpc_freq        resq 1   ; ticks/seconde (QueryPerformanceFrequency)
+qpc_last        resq 1   ; timestamp dernière frame
+qpc_now_buf     resq 1   ; buffer lecture QPC
+accumulator     resq 1   ; µs accumulées (physique)
 
 section .text
 
@@ -266,6 +278,17 @@ Start:
     ; --- AUDIO INIT (noms du nouveau) ---
     call Audio_Init
 
+    ; --- Résolution timer Windows → 1ms ---
+    mov ecx, 1
+    call timeBeginPeriod
+
+    ; --- Initialiser le timer QPC ---
+    lea rcx, [rel qpc_freq]
+    call QueryPerformanceFrequency
+    lea rcx, [rel qpc_last]
+    call QueryPerformanceCounter
+    mov qword [rel accumulator], 0
+
     mov dword [rel player_x], 380
     mov dword [rel player_y], 100
     call game_init
@@ -322,20 +345,65 @@ game_loop:
     jmp .msg
 
 .frame:
+    ; ============================================================
+    ; FIXED TIMESTEP ACCUMULATOR  (méthode Unity/Unreal)
+    ; ------------------------------------------------------------
+    ; 1. Mesurer le temps réel écoulé depuis la dernière frame
+    ; 2. L'ajouter à l'accumulateur
+    ; 3. Consommer des tranches de 16 666 µs = 1 tick physique
+    ;    → game_update() tourne TOUJOURS à exactement 60Hz
+    ;    → que le PC fasse 30 FPS ou 500 FPS, la physique est identique
+    ; ============================================================
+
+    ; --- Lire l'horloge maintenant ---
+    lea rcx, [rel qpc_now_buf]
+    call QueryPerformanceCounter
+
+    ; --- delta_ticks = now - last ---
+    mov rax, [rel qpc_now_buf]
+    mov rdx, [rel qpc_last]
+    sub rax, rdx                    ; rax = ticks écoulés
+
+    ; --- Sauvegarder last = now ---
+    mov rdx, [rel qpc_now_buf]
+    mov [rel qpc_last], rdx
+
+    ; --- delta_us = delta_ticks * 1 000 000 / freq ---
+    imul rax, 1000000
+    xor rdx, rdx
+    div qword [rel qpc_freq]        ; rax = microsecondes réelles
+
+    ; --- Plafond à 33 333 µs (30 FPS min) ---
+    ; Évite la "spiral of death" si le jeu lag une frame
+    cmp rax, 28000
+    jle .add_accum
+    mov rax, 28000
+.add_accum:
+    add [rel accumulator], rax      ; accumuler le temps réel
+
+    ; --- Consommer des ticks fixes de 16 666 µs ---
+    ; Chaque tick = 1 appel à game_update (physique à 60Hz fixe)
+.tick_loop:
+    cmp qword [rel accumulator], 28000
+    jl  .render                     ; pas assez → aller au rendu
+
+    sub qword [rel accumulator], 28000
+
+    ; Appel game_update ou gestion game_over
     mov eax, [rel game_over]
     cmp eax, 1
-    je .handle_gameover
-    call game_update
-    jmp .render
+    je .handle_gameover_tick
 
-.handle_gameover:
+    call game_update
+    jmp .tick_loop
+
+.handle_gameover_tick:
     mov rcx, VK_SPACE
     call GetAsyncKeyState
     test ax, 0x8000
-    jz .render
+    jz .tick_loop
     call game_init
-    mov ecx, 200
-    call Sleep
+    jmp .tick_loop
 
 .render:
     call clear_backbuffer
@@ -354,8 +422,12 @@ game_loop:
     call InvalidateRect
     mov rcx, [rel hwnd_main]
     call UpdateWindow
-    mov ecx, 16
+
+    ; Sleep(1) : céder le CPU 1ms (pas de spin à 100%)
+    ; Le QPC mesure le vrai temps écoulé donc aucune dérive
+    mov ecx, 1
     call Sleep
+
     jmp game_loop
 
 .quit:
