@@ -53,6 +53,8 @@ extern platforms_render
 extern score_render
 extern game_over
 extern draw_game_over
+extern stars_init
+extern stars_render
 
 %define SCREEN_W        800
 %define SCREEN_H        600
@@ -60,7 +62,8 @@ extern draw_game_over
 %define CS_VREDRAW      0x0001
 %define IDC_ARROW       32512
 %define SW_SHOW         5
-%define WS_OVERLAPPEDWINDOW 0x00CF0000
+; WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX (pas de resize)
+%define WS_FIXED_WINDOW     0x00C80000
 %define CW_USEDEFAULT   0x80000000
 %define WM_DESTROY      0x0002
 %define WM_PAINT        0x000F
@@ -140,11 +143,27 @@ accumulator     resq 1   ; µs accumulées (physique)
 
 section .text
 
+; ============================================================
+; AVX2 clear backbuffer — 8 pixels per instruction (256-bit)
+; 800×600 = 480,000 pixels / 8 = 60,000 vmovdqu stores
+; ~4× faster than rep stosd
+; ============================================================
 clear_backbuffer:
     lea rdi, [rel backbuffer]
-    mov rcx, SCREEN_W*SCREEN_H
-    mov eax, 0x0087CEEB
-    rep stosd
+
+    ; Broadcast sky color to all 8 dword lanes of YMM0
+    mov eax, 0x0087CEEB             ; Sky blue
+    movd xmm0, eax
+    vpbroadcastd ymm0, xmm0        ; YMM0 = [sky, sky, sky, sky, sky, sky, sky, sky]
+
+    mov rcx, SCREEN_W * SCREEN_H / 8   ; 60,000 iterations
+.avx_loop:
+    vmovdqu [rdi], ymm0            ; Store 8 pixels (32 bytes)
+    add rdi, 32
+    dec rcx
+    jnz .avx_loop
+
+    vzeroupper                      ; Clean YMM state for SSE compatibility
     ret
 
 draw_player:
@@ -289,6 +308,7 @@ Start:
     mov dword [rel player_x], 380
     mov dword [rel player_y], 100
     call game_init
+    call stars_init
 
     lea rbx, [rel wcx]
     mov dword [rbx+0], 80
@@ -306,7 +326,7 @@ Start:
     xor ecx, ecx
     lea rdx, [rel class_name]
     lea r8,  [rel window_title]
-    mov r9d, WS_OVERLAPPEDWINDOW
+    mov r9d, WS_FIXED_WINDOW
     mov dword [rsp+32], CW_USEDEFAULT
     mov dword [rsp+40], CW_USEDEFAULT
     mov dword [rsp+48], SCREEN_W
@@ -407,6 +427,7 @@ game_loop:
 
 .render:
     call clear_backbuffer
+    call stars_render
     call platforms_render
     call draw_player
     call score_render

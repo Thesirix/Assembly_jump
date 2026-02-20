@@ -27,6 +27,9 @@ extern game_over
 section .text
 
 game_init:
+    push rbx
+    sub rsp, 32
+
     ; Remise à zéro totale
     mov dword [rel player_x], 380
     mov dword [rel player_y], 500
@@ -37,13 +40,17 @@ game_init:
     call score_init
     
     ; RESET MUSIQUE (Silence + Rembobinage au début)
-    sub rsp, 40
     mov ecx, CMD_STOP_MUSIC
     call audio_post_cmd
-    add rsp, 40
+    
+    add rsp, 32
+    pop rbx
     ret
 
 game_update:
+    push rbx
+    sub rsp, 32
+
     call input_update
     call physics_update
     
@@ -58,16 +65,17 @@ game_update:
     call score_update
     
     ; --- MUSIQUE (Jeu en cours) ---
-    sub rsp, 40
     mov ecx, CMD_UPDATE_MUSIC
     call audio_post_cmd
-    add rsp, 40
+    
+    add rsp, 32
+    pop rbx
     ret
 
 .stop_sound:
     ; Le jeu vient de finir, on coupe la note coincée
-    sub rsp, 40
     mov ecx, CMD_STOP_MUSIC
     call audio_post_cmd
-    add rsp, 40
+    add rsp, 32
+    pop rbx
     ret
