@@ -1,5 +1,19 @@
 @echo off
 setlocal
+REM ============================================================
+REM Doodle Jump — NASM x86-64 Assembly (Windows)
+REM Features:
+REM   - Multi-threading (3 workers: render, audio, platgen)
+REM   - SIMD SSE2 (collision 4-wide) + AVX2 (clear 8-wide)
+REM   - FPU x87 (fsin oscillation, float parabolic physics)
+REM   - Fixed timestep QPC (Unity/Unreal method)
+REM   - Double-buffering render thread
+REM   - Perlin noise 1D (coherent level generator)
+REM   - HSV->RGB integer conversion (platform colors)
+REM   - Particle system (disintegration + gravity)
+REM   - SIMD sky gradient (adaptive vertical gradient)
+REM   - Parallax starfield 3 layers + twinkle
+REM ============================================================
 
 set ROOT=%~dp0
 set SRC=%ROOT%src

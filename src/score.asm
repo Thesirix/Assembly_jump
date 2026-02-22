@@ -8,7 +8,8 @@ global score_render
 global draw_number_at
 global draw_text_gameover
 global draw_text_restart
-global draw_game_over       ; <--- EXPORTÉ POUR QUE MAIN LE TROUVE
+global draw_game_over
+global sky_render            ; Dégradé de ciel SIMD
 
 extern player_y
 extern backbuffer
@@ -376,7 +377,257 @@ draw_game_over:
     
     ; 4. Restart
     call draw_text_restart
-    
+
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+; ============================================================
+; sky_render — Dégradé vertical de ciel adaptatif (remplace clear_backbuffer)
+; Couleur top/bottom calculée depuis camera_y
+; Utilise SSE2 pour remplir 4 pixels par store
+; ============================================================
+; Formule couleur :
+;   altitude = clamp(abs(camera_y) / 200, 0, 255)
+;   Top    : R = 0,             G = alt/3,      B = 50 + alt*0.6
+;   Bottom : R = 20 + alt/4,    G = 40 + alt/2, B = 80 + alt*0.5
+;   Chaque ligne interpole linéairement entre top et bottom
+; ============================================================
+sky_render:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    push rbp
+    push rsi
+    push rdi
+
+    lea rdi, [rel backbuffer]
+
+    ; Calculer altitude = clamp(abs(camera_y) / 200, 0, 255)
+    mov eax, [rel camera_y]
+    neg eax
+    cmp eax, 0
+    jge .sky_pos
+    xor eax, eax
+.sky_pos:
+    xor edx, edx
+    mov ecx, 200
+    div ecx                     ; eax = abs(camera_y) / 200
+    cmp eax, 255
+    jle .sky_clamped
+    mov eax, 255
+.sky_clamped:
+    mov ebp, eax                ; ebp = altitude (0..255)
+
+    ; --- Calculer couleur top (BGR32) ---
+    ; R_top = 0
+    xor r12d, r12d
+    ; G_top = altitude / 3
+    mov eax, ebp
+    xor edx, edx
+    mov ecx, 3
+    div ecx
+    mov r13d, eax               ; G_top
+    ; B_top = clamp(50 + altitude * 3 / 5, 0, 255)
+    mov eax, ebp
+    imul eax, 3
+    xor edx, edx
+    mov ecx, 5
+    div ecx
+    add eax, 50
+    cmp eax, 255
+    jle .bt_ok
+    mov eax, 255
+.bt_ok:
+    mov r14d, eax               ; B_top
+
+    ; top_color = B_top<<16 | G_top<<8 | R_top
+    mov eax, r14d
+    shl eax, 16
+    mov ecx, r13d
+    shl ecx, 8
+    or eax, ecx
+    or eax, r12d
+    mov r12d, eax               ; r12d = top_color
+
+    ; --- Calculer couleur bottom (BGR32) ---
+    ; R_bot = 20 + altitude / 4
+    mov eax, ebp
+    shr eax, 2
+    add eax, 20
+    cmp eax, 255
+    jle .rb_ok
+    mov eax, 255
+.rb_ok:
+    mov r13d, eax               ; R_bot
+
+    ; G_bot = 40 + altitude / 2
+    mov eax, ebp
+    shr eax, 1
+    add eax, 40
+    cmp eax, 255
+    jle .gb_ok
+    mov eax, 255
+.gb_ok:
+    mov r14d, eax               ; G_bot
+
+    ; B_bot = clamp(80 + altitude / 2, 0, 255)
+    mov eax, ebp
+    shr eax, 1
+    add eax, 80
+    cmp eax, 255
+    jle .bb_ok
+    mov eax, 255
+.bb_ok:
+    mov r15d, eax               ; B_bot
+
+    ; bottom_color
+    mov eax, r15d
+    shl eax, 16
+    mov ecx, r14d
+    shl ecx, 8
+    or eax, ecx
+    or eax, r13d
+    mov r13d, eax               ; r13d = bottom_color
+
+    ; --- Extraire composantes pour interpolation ---
+    ; top: r12d = packed, bottom: r13d = packed
+    ; On interpole par ligne : color(y) = top + (bottom - top) * y / 600
+
+    ; Extraire R, G, B top
+    mov eax, r12d
+    and eax, 0xFF
+    mov ebp, eax                ; R_top (on réutilise ebp)
+
+    mov eax, r12d
+    shr eax, 8
+    and eax, 0xFF
+    mov esi, eax                ; G_top (dans esi)
+
+    mov eax, r12d
+    shr eax, 16
+    and eax, 0xFF
+    mov ebx, eax                ; B_top (dans ebx)
+
+    ; Extraire R, G, B bottom et calculer deltas * 256
+    ; delta_R = (R_bot - R_top)
+    mov eax, r13d
+    and eax, 0xFF
+    sub eax, ebp
+    ; delta_R * 256 pour précision fixe
+    shl eax, 8
+    push rax                    ; [rsp] = delta_R << 8
+
+    mov eax, r13d
+    shr eax, 8
+    and eax, 0xFF
+    sub eax, esi
+    shl eax, 8
+    push rax                    ; [rsp] = delta_G << 8, [rsp+8] = delta_R << 8
+
+    mov eax, r13d
+    shr eax, 16
+    and eax, 0xFF
+    sub eax, ebx
+    shl eax, 8
+    push rax                    ; [rsp] = delta_B << 8
+
+    ; Maintenant itérer sur les 600 lignes
+    xor r14d, r14d              ; r14d = ligne courante (0..599)
+
+.sky_line:
+    cmp r14d, SCREEN_H
+    jge .sky_done
+
+    ; R = R_top + delta_R * y / 600
+    ; En fixed point: R = R_top + (delta_R<<8) * y / 600 >> 8
+    mov eax, [rsp + 16]         ; delta_R << 8
+    imul eax, r14d
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx
+    sar eax, 8
+    add eax, ebp                ; + R_top
+    ; Clamp
+    cmp eax, 0
+    jge .sr_pos
+    xor eax, eax
+.sr_pos:
+    cmp eax, 255
+    jle .sr_ok
+    mov eax, 255
+.sr_ok:
+    mov r15d, eax               ; R final
+
+    ; G
+    mov eax, [rsp + 8]          ; delta_G << 8
+    imul eax, r14d
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx
+    sar eax, 8
+    add eax, esi                ; + G_top
+    cmp eax, 0
+    jge .sg_pos
+    xor eax, eax
+.sg_pos:
+    cmp eax, 255
+    jle .sg_ok
+    mov eax, 255
+.sg_ok:
+    shl eax, 8
+    or r15d, eax                ; |= G << 8
+
+    ; B
+    mov eax, [rsp]              ; delta_B << 8
+    imul eax, r14d
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx
+    sar eax, 8
+    add eax, ebx                ; + B_top
+    cmp eax, 0
+    jge .sb_pos
+    xor eax, eax
+.sb_pos:
+    cmp eax, 255
+    jle .sb_ok
+    mov eax, 255
+.sb_ok:
+    shl eax, 16
+    or r15d, eax                ; |= B << 16
+
+    ; --- SSE2 : remplir 800 pixels de cette ligne (4 pixels par store) ---
+    ; Broadcast r15d dans xmm0
+    movd xmm0, r15d
+    pshufd xmm0, xmm0, 0       ; [color, color, color, color]
+
+    ; Calculer adresse de début de ligne
+    mov eax, r14d
+    imul eax, SCREEN_W
+    lea rcx, [rdi + rax*4]     ; rcx = &backbuffer[y * 800]
+
+    ; 800 pixels / 4 = 200 itérations SSE2
+    mov edx, 200
+.sky_fill:
+    movdqu [rcx], xmm0
+    add rcx, 16
+    dec edx
+    jnz .sky_fill
+
+    inc r14d
+    jmp .sky_line
+
+.sky_done:
+    add rsp, 24                 ; libérer les 3 push delta
+    pop rdi
+    pop rsi
+    pop rbp
+    pop r15
+    pop r14
     pop r13
     pop r12
     pop rbx

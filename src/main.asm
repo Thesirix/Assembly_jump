@@ -55,6 +55,9 @@ extern game_over
 extern draw_game_over
 extern stars_init
 extern stars_render
+extern sky_render
+extern particles_update
+extern particles_render
 
 %define SCREEN_W        800
 %define SCREEN_H        600
@@ -426,9 +429,13 @@ game_loop:
     jmp .tick_loop
 
 .render:
-    call clear_backbuffer
+    ; Dégradé de ciel SIMD (remplace clear_backbuffer)
+    call sky_render
     call stars_render
     call platforms_render
+    ; Mise à jour et rendu des particules de désintégration
+    call particles_update
+    call particles_render
     call draw_player
     call score_render
     mov eax, [rel game_over]
