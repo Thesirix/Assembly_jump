@@ -16,12 +16,12 @@ DEFAULT REL
 ; =============================================================
 
 global wrap_perlin2d    ; (ecx=x_int, edx=y_int) -> eax [-127,+127]
-global wrap_smooth_log  ; (ecx=val_int)           -> eax [0,255]
 global wrap_plat_freq   ; (ecx=index)             -> xmm0 (double)
+global wrap_sin         ; (xmm0=angle radians)    -> xmm0 (double)
 
 extern helper_perlin2d
-extern helper_smooth_log
 extern helper_plat_freq
+extern helper_sin
 
 section .data
 ; Constantes de mise à l'échelle pour les retours doubles
@@ -78,41 +78,6 @@ wrap_perlin2d:
     ret
 
 ; =============================================================
-; wrap_smooth_log — Passe une valeur entière par log(log(x))
-;                   Technique de smooth coloring du Mandelbrot
-;
-; Entrée : ecx = valeur entière (ex: abs(camera_y))
-; Sortie : eax = résultat [0, 255]
-;
-; Alignement RSP :
-;   0 pushes + sub 40 = 40. (8 - 40) mod 16 = 0. OK
-; =============================================================
-wrap_smooth_log:
-    sub rsp, 40                     ; shadow space
-
-    ; --- Convertir ecx (int) -> double dans xmm0 ---
-    movsxd rax, ecx
-    cvtsi2sd xmm0, rax              ; xmm0 = (double)val
-
-    ; --- Appel C : helper_smooth_log(val) ---
-    ; Retour dans xmm0 (double dans [0.0, 255.0])
-    call helper_smooth_log
-
-    ; --- Convertir double -> entier [0, 255] ---
-    cvttsd2si eax, xmm0
-
-    ; Clamp [0, 255]
-    cmp eax, 0
-    jge .pos
-    xor eax, eax
-.pos:
-    cmp eax, 255
-    jle .done
-    mov eax, 255
-.done:
-    add rsp, 40
-    ret
-
 ; =============================================================
 ; wrap_plat_freq — Retourne la fréquence d'oscillation propre
 ;                  à une plateforme donnée (via bridge C)
@@ -127,5 +92,24 @@ wrap_plat_freq:
     sub rsp, 40                     ; shadow space
     ; ecx = index → déjà en place pour Win64 (premier arg entier)
     call helper_plat_freq           ; retour dans xmm0 (double)
+    add rsp, 40
+    ret
+
+; =============================================================
+; wrap_sin — Calcule sin(angle) via la CRT C (élimine fsin x87)
+;
+; Entrée : xmm0 = angle (double, radians)
+; Sortie : xmm0 = sin(angle) dans [-1.0, +1.0]
+;
+; xmm0 est déjà le premier argument flottant Win64 ABI.
+; Le résultat double retourne dans xmm0 — aucune conversion.
+;
+; Alignement RSP :
+;   0 pushes + sub 40 = 40. (8-40) mod 16 = 0. OK
+; =============================================================
+wrap_sin:
+    sub rsp, 40                     ; shadow space
+    ; xmm0 = angle → déjà en place pour Win64 (premier arg double)
+    call helper_sin                 ; retour dans xmm0 (double)
     add rsp, 40
     ret

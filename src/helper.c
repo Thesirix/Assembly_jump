@@ -71,16 +71,14 @@ __declspec(dllexport) double helper_smooth_log(double val)
     if (val <= 0.0)
         return 0.0;
 
-    // Premier log : compresse la plage dynamique
-    double l1 = log(val + 2.0);
-    if (l1 <= 0.0)
-        return 0.0;
-
-    // Second log : smooth coloring (comme Mandelbrot)
-    double l2 = log(l1 + 1.0);
-
-    // Normaliser sur [0, 255]
-    double result = l2 * 110.0;
+    // Smooth coloring logarithmique calibré pour les altitudes du jeu (0..~15000 px)
+    // Formule : log(val/1800 + 1) * 110
+    //   val=0     → 0.0   (ciel bleu pur au départ)
+    //   val=3000  → 108   (mi-transition)
+    //   val=15000 → 246   (presque nuit en fin de partie)
+    // La courbe log donne une progression douce : rapide au début, s'aplatit en haut
+    // (même principe que le smooth coloring Mandelbrot, recalibré pour un jeu)
+    double result = log(val / 1800.0 + 1.0) * 110.0;
     if (result < 0.0)
         result = 0.0;
     if (result > 255.0)
@@ -100,4 +98,17 @@ __declspec(dllexport) double helper_plat_freq(int index)
 {
     // Base : 0.006, variation par modulo 7 (nombre premier pour diversité)
     return 0.006 + (double)(index % 7) * 0.0015;
+}
+
+// =============================================================
+// helper_sin — Wrapper sin() pour l'assembleur
+// Entrée : xmm0 = angle (double, radians)
+// Retour : xmm0 (double) = sin(angle) dans [-1.0, +1.0]
+//
+// Élimine le dernier x87 (fsin) de platforms.asm en déléguant
+// au sin() de la CRT via le bridge C, conforme ABI Win64.
+// =============================================================
+__declspec(dllexport) double helper_sin(double angle)
+{
+    return sin(angle);
 }

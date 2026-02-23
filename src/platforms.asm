@@ -30,6 +30,7 @@ extern platpool_request
 ; Import du bridge C (helper.asm -> helper.c)
 extern wrap_perlin2d
 extern wrap_plat_freq
+extern wrap_sin
 
 %define SCREEN_W        800
 %define SCREEN_H        600
@@ -96,7 +97,7 @@ part_color  resd MAX_PARTICLES
 ; Compteur de gravité douce des particules (1 incrément tous les 3 frames)
 part_grav_tick resd 1
 
-; Temporaire FPU
+; Temporaire SSE2 (cvttsd2si → offset entier)
 fpu_temp resd 1
 
 ; Temporaire pour le bridge wrap_plat_freq (double retourné dans xmm0)
@@ -501,7 +502,7 @@ platforms_hit_timer_update:
     ret
 
 ; ============================================================
-; platforms_update_mobile — Oscillation FPU fsin
+; platforms_update_mobile — Oscillation SSE2 + sin via bridge C
 ; ============================================================
 platforms_update_mobile:
     push rbx
@@ -527,29 +528,33 @@ platforms_update_mobile:
     ; wrap_plat_freq(index) -> xmm0 (double)
     mov ecx, r12d
     call wrap_plat_freq             ; xmm0 = fréquence de cette plateforme
-    ; Sauvegarder la fréquence en mémoire pour FPU
+    ; Sauvegarder la fréquence en mémoire (double64 → fpu_freq_tmp)
     movsd [rel fpu_freq_tmp], xmm0
 
-    ; --- FPU : angle = anim_tick * freq + index * 0.7 ---
-    ; Partie 1 : anim_tick * freq
-    fild dword [rel anim_tick]          ; st0 = anim_tick (int->80bit)
-    fmul qword [rel fpu_freq_tmp]       ; st0 = anim_tick * freq
+    ; --- SSE2 : angle = anim_tick * freq + index * 0.7 ---
+    ; Partie 1 : anim_tick * freq (freq = double64 dans fpu_freq_tmp)
+    mov eax, [rel anim_tick]
+    cvtsi2sd xmm0, eax                  ; xmm0 = (double)anim_tick
+    mulsd xmm0, [rel fpu_freq_tmp]      ; xmm0 = anim_tick * freq
 
     ; Partie 2 : index * 0.7 (désynchronisation par plateforme)
-    mov eax, r12d
-    mov [rel fpu_temp], eax
-    fild dword [rel fpu_temp]           ; st0 = index, st1 = tick*freq
-    fmul dword [rel fpu_desync]         ; st0 = index * 0.7
-    faddp                               ; st0 = tick*freq + index*0.7
+    cvtsi2sd xmm1, r12d                 ; xmm1 = (double)index
+    movss xmm2, [rel fpu_desync]        ; xmm2[31:0] = 0.7 (float32)
+    cvtss2sd xmm2, xmm2                 ; xmm2 = 0.7 (double64)
+    mulsd xmm1, xmm2                    ; xmm1 = index * 0.7
+    addsd xmm0, xmm1                    ; xmm0 = angle = tick*freq + index*0.7
 
-    ; Calculer sin(angle)
-    fsin                                ; st0 = sin(angle) dans [-1.0, +1.0]
+    ; sin(angle) via bridge C (remplace fsin x87)
+    call wrap_sin                       ; xmm0 = sin(angle) dans [-1.0, +1.0]
 
     ; Multiplier par amplitude (40 pixels)
-    fmul dword [rel fpu_40]             ; st0 = sin(angle) * 40
+    movss xmm1, [rel fpu_40]            ; xmm1[31:0] = 40.0 (float32)
+    cvtss2sd xmm1, xmm1                 ; xmm1 = 40.0 (double64)
+    mulsd xmm0, xmm1                    ; xmm0 = sin(angle) * 40
 
-    ; Convertir en entier (arrondi)
-    fistp dword [rel fpu_temp]          ; fpu_temp = offset pixels, pile vide
+    ; Convertir en entier par troncature (remplace fistp)
+    cvttsd2si eax, xmm0                 ; eax = (int)(sin(angle)*40)
+    mov [rel fpu_temp], eax             ; fpu_temp = offset pixels
 
     ; Appliquer l'offset à la position de base
     lea rbx, [rel platforms_base_x]
