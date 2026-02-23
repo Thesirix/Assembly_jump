@@ -27,33 +27,43 @@ extern audio_post_cmd
 extern platpool_consume
 extern platpool_request
 
-%define SCREEN_W 800
-%define SCREEN_H 600
-%define PLAYER_W 24
-%define PLAYER_H 24
-%define PLATFORM_W 80
-%define PLATFORM_H 12
-%define MAX_PLATFORMS 32
-%define MAX_PARTICLES 256
+; Import du bridge C (helper.asm -> helper.c)
+extern wrap_perlin2d
+extern wrap_plat_freq
+
+%define SCREEN_W        800
+%define SCREEN_H        600
+%define PLAYER_W        24
+%define PLAYER_H        24
+%define PLATFORM_W      80
+%define PLATFORM_H      12
+%define MAX_PLATFORMS   32
+%define MAX_PARTICLES   512         ; AUGMENTÉ : 32*16 = 512 slots particules
 
 ; ============================================================
 section .data
 ; ============================================================
 rand_seed dd 12345
 
-; Constante float pour le rebond (vel_y est un float)
-bounce_vel dd -12.0
+; vel_y est maintenant double64 (resq dans physics.asm)
+; bounce_vel doit aussi être double64 pour la cohérence
+bounce_vel dq -12.0             ; double64 — même taille que vel_y
 
-; Table de permutation Perlin (256 entrées)
+; Table de permutation Perlin 1D (256 entrées, Fisher-Yates)
 perlin_perm:
     times 256 db 0
 
-; Constantes FPU pour oscillation des plateformes mobiles
-fpu_point05  dd 0.05            ; Fréquence d'oscillation
-fpu_40       dd 40.0            ; Amplitude en pixels
+; --- Constantes FPU oscillation plateformes mobiles ---
+fpu_base_freq   dd 0.008        ; Fréquence de base (ralentie)
+fpu_desync      dd 0.7          ; Décalage de phase par index (désynchronisation)
+fpu_40          dd 40.0         ; Amplitude en pixels
 
 ; Compteur animation plateformes mobiles
 anim_tick dd 0
+
+; --- Marges pour arrondir les bords des plateformes (PLATFORM_H = 12) ---
+; Coupe 4 pixels au sommet, puis 2, puis 1, puis droit, et pareil en bas.
+plat_margins db 4, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 4
 
 ; ============================================================
 section .bss
@@ -62,31 +72,37 @@ platforms_x      resd MAX_PLATFORMS
 platforms_y      resd MAX_PLATFORMS
 platforms_active resb MAX_PLATFORMS
 
-; Plateformes mobiles (1 sur 4)
+; Plateformes mobiles (flag, 20% aléatoire)
 platforms_mobile resb MAX_PLATFORMS
 platforms_base_x resd MAX_PLATFORMS
 
-; Timer de flash visuel (ne désactive PAS la plateforme)
+; Timer de flash visuel (cosmétique seulement)
 platforms_hit_timer resb MAX_PLATFORMS
 
 highest_platform_y resd 1
 highest_platform_x resd 1
 
-; Couleur HSV calculée pour les plateformes (BGR32)
+; Couleur HSV des plateformes (BGR32)
 platform_color resd 1
 
-; --- Particules de désintégration ---
-part_x    resd MAX_PARTICLES
-part_y    resd MAX_PARTICLES
-part_vx   resd MAX_PARTICLES
-part_vy   resd MAX_PARTICLES
-part_life resb MAX_PARTICLES
-part_color resd MAX_PARTICLES
+; --- Particules de désintégration (MAX_PARTICLES = 512) ---
+part_x      resd MAX_PARTICLES
+part_y      resd MAX_PARTICLES
+part_vx     resd MAX_PARTICLES
+part_vy     resd MAX_PARTICLES
+part_life   resb MAX_PARTICLES
+part_color  resd MAX_PARTICLES
+
+; Compteur de gravité douce des particules (1 incrément tous les 3 frames)
+part_grav_tick resd 1
 
 ; Temporaire FPU
 fpu_temp resd 1
 
-; Temporaire pour sauvegarder l'index particule (évite push/pop)
+; Temporaire pour le bridge wrap_plat_freq (double retourné dans xmm0)
+fpu_freq_tmp resq 1
+
+; Temporaire pour sauvegarder l'index particule entre les appels random
 emit_save_idx resd 1
 
 ; ============================================================
@@ -94,7 +110,8 @@ section .text
 ; ============================================================
 
 ; ============================================================
-; random — LCG, retourne eax = 0..32767
+; random — LCG (Linear Congruential Generator)
+; Retourne : eax = 0..32767
 ; ============================================================
 random:
     push rbx
@@ -109,14 +126,16 @@ random:
     ret
 
 ; ============================================================
-; perlin_init — Table de permutation Fisher-Yates
+; perlin_init — Initialise la table de permutation 1D
+; Algorithme Fisher-Yates depuis rdtsc (aléatoire à chaque démarrage)
 ; 2 pushes + sub 40 = 56. 56 mod 16 = 8. OK
 ; ============================================================
 perlin_init:
     push rbx
     push r12
-    sub rsp, 40                 ; CORRIGÉ (était 32)
+    sub rsp, 40
 
+    ; Remplir 0..255
     lea rbx, [rel perlin_perm]
     xor ecx, ecx
 .fill:
@@ -125,6 +144,7 @@ perlin_init:
     cmp ecx, 256
     jl .fill
 
+    ; Mélange Fisher-Yates
     mov r12d, 255
 .shuffle:
     cmp r12d, 0
@@ -135,8 +155,8 @@ perlin_init:
     inc ecx
     div ecx
     lea rbx, [rel perlin_perm]
-    mov al, [rbx + r12]
-    mov cl, [rbx + rdx]
+    mov al,  [rbx + r12]
+    mov cl,  [rbx + rdx]
     mov [rbx + r12], cl
     mov [rbx + rdx], al
     dec r12d
@@ -148,10 +168,9 @@ perlin_init:
     ret
 
 ; ============================================================
-; noise1d — Bruit de Perlin 1D entier
+; noise1d — Bruit de Perlin 1D entier (table perlin_perm)
 ; Entrée : ecx = coordonnée
 ; Sortie : eax = [-128, +127]
-; Pas de calls → alignement non critique
 ; ============================================================
 noise1d:
     push rbx
@@ -160,7 +179,7 @@ noise1d:
 
     mov eax, ecx
     mov r12d, eax
-    and r12d, 0xFF              ; frac
+    and r12d, 0xFF              ; partie fractionnaire (0..255)
 
     sar eax, 8
     and eax, 0xFF
@@ -176,10 +195,11 @@ noise1d:
     movzx eax, byte [r13 + rbx]
     sub eax, 128               ; grad1
 
+    ; Interpolation linéaire entière
     sub eax, ecx
     imul eax, r12d
     sar eax, 8
-    add eax, ecx
+    add eax, ecx               ; résultat = grad0 + frac*(grad1-grad0)
 
     pop r13
     pop r12
@@ -187,10 +207,9 @@ noise1d:
     ret
 
 ; ============================================================
-; hsv_to_rgb — HSV → RGB entier
-; ecx=hue(0..359), edx=sat(0..255), r8d=val(0..255)
-; Retour : eax = 0x00BBGGRR
-; 5 pushes + 2 pushes internes. Pas de calls → OK.
+; hsv_to_rgb — Conversion HSV -> RGB entier pur
+; Entrée : ecx=hue(0..359), edx=sat(0..255), r8d=val(0..255)
+; Retour  : eax = 0x00BBGGRR
 ; ============================================================
 hsv_to_rgb:
     push rbx
@@ -203,13 +222,15 @@ hsv_to_rgb:
     mov r13d, edx               ; sat
     mov r14d, r8d               ; val
 
+    ; Secteur HSV (0..5)
     mov eax, r12d
     xor edx, edx
     mov ecx, 60
     div ecx
-    mov ebx, eax                ; sector
-    mov r15d, edx               ; remainder
+    mov ebx, eax                ; secteur
+    mov r15d, edx               ; reste
 
+    ; f = reste * 255 / 60 (facteur d'interpolation)
     imul r15d, 255
     mov eax, r15d
     xor edx, edx
@@ -260,6 +281,7 @@ hsv_to_rgb:
     pop rcx                     ; q
     pop rdx                     ; p
 
+    ; Sélectionner R,G,B selon le secteur
     cmp ebx, 0
     je .sec0
     cmp ebx, 1
@@ -272,42 +294,42 @@ hsv_to_rgb:
     je .sec4
     jmp .sec5
 
-.sec0:
+.sec0: ; R=val, G=t,   B=p
     mov eax, edx
     shl eax, 8
     or eax, r15d
     shl eax, 8
     or eax, r14d
     jmp .hsv_done
-.sec1:
+.sec1: ; R=q,   G=val, B=p
     mov eax, edx
     shl eax, 8
     or eax, r14d
     shl eax, 8
     or eax, ecx
     jmp .hsv_done
-.sec2:
+.sec2: ; R=p,   G=val, B=t
     mov eax, r15d
     shl eax, 8
     or eax, r14d
     shl eax, 8
     or eax, edx
     jmp .hsv_done
-.sec3:
+.sec3: ; R=p,   G=q,   B=val
     mov eax, r14d
     shl eax, 8
     or eax, ecx
     shl eax, 8
     or eax, edx
     jmp .hsv_done
-.sec4:
+.sec4: ; R=t,   G=p,   B=val
     mov eax, r14d
     shl eax, 8
     or eax, edx
     shl eax, 8
     or eax, r15d
     jmp .hsv_done
-.sec5:
+.sec5: ; R=val, G=p,   B=q
     mov eax, ecx
     shl eax, 8
     or eax, edx
@@ -337,16 +359,15 @@ platforms_init:
 
     call perlin_init
 
-    ; Reset plateformes
+    ; Reset toutes les tables
     xor r12d, r12d
     lea rbx, [rel platforms_active]
-.clear_loop:
+.clear_active:
     mov byte [rbx + r12], 0
     inc r12d
     cmp r12d, MAX_PLATFORMS
-    jl .clear_loop
+    jl .clear_active
 
-    ; Reset mobiles
     xor r12d, r12d
     lea rbx, [rel platforms_mobile]
 .clear_mobile:
@@ -355,7 +376,6 @@ platforms_init:
     cmp r12d, MAX_PLATFORMS
     jl .clear_mobile
 
-    ; Reset hit timers
     xor r12d, r12d
     lea rbx, [rel platforms_hit_timer]
 .clear_timer:
@@ -364,7 +384,7 @@ platforms_init:
     cmp r12d, MAX_PLATFORMS
     jl .clear_timer
 
-    ; Reset particules
+    ; Reset particules (MAX_PARTICLES = 512)
     xor r12d, r12d
     lea rbx, [rel part_life]
 .clear_parts:
@@ -374,8 +394,9 @@ platforms_init:
     jl .clear_parts
 
     mov dword [rel anim_tick], 0
+    mov dword [rel part_grav_tick], 0
 
-    ; Première plateforme fixe (Base)
+    ; Première plateforme fixe
     lea rbx, [rel platforms_x]
     mov dword [rbx], 350
     lea rbx, [rel platforms_y]
@@ -385,7 +406,7 @@ platforms_init:
     lea rbx, [rel platforms_base_x]
     mov dword [rbx], 350
     lea rbx, [rel platforms_mobile]
-    mov byte [rbx], 0
+    mov byte [rbx], 0           ; première plateforme jamais mobile
 
     mov dword [rel highest_platform_y], 520
     mov dword [rel highest_platform_x], 350
@@ -409,7 +430,7 @@ platforms_init:
 
 ; ============================================================
 ; platforms_update
-; 0 pushes + sub 40. 40 mod 16 = 8. OK
+; 0 pushes + sub 40 = 40. 40 mod 16 = 8. OK
 ; ============================================================
 platforms_update:
     sub rsp, 40
@@ -447,9 +468,9 @@ update_platform_color:
     mov ecx, 360
     div ecx
 
-    mov ecx, edx               ; hue
-    mov edx, 200               ; sat
-    mov r8d, 220               ; val
+    mov ecx, edx               ; hue = (camera_y/50) mod 360
+    mov edx, 200               ; saturation
+    mov r8d, 220               ; valeur
     call hsv_to_rgb
     mov [rel platform_color], eax
 
@@ -458,8 +479,7 @@ update_platform_color:
     ret
 
 ; ============================================================
-; platforms_hit_timer_update — Décrémenter timers (VISUEL SEULEMENT)
-; Ne désactive PAS les plateformes !
+; platforms_hit_timer_update — Décrémenter timers flash visuel
 ; ============================================================
 platforms_hit_timer_update:
     push rbx
@@ -472,7 +492,6 @@ platforms_hit_timer_update:
     cmp byte [rbx + r12], 0
     je .next
     dec byte [rbx + r12]
-    ; PAS de désactivation — le flash est purement cosmétique
 .next:
     inc r12d
     jmp .loop
@@ -483,17 +502,19 @@ platforms_hit_timer_update:
 
 ; ============================================================
 ; platforms_update_mobile — Oscillation FPU fsin
-; Pas de calls externes → alignement non critique
 ; ============================================================
 platforms_update_mobile:
     push rbx
     push r12
+    sub rsp, 56
 
     xor r12d, r12d
+
 .loop:
     cmp r12d, MAX_PLATFORMS
     jge .done
 
+    ; Vérifier si cette plateforme est mobile et active
     lea rbx, [rel platforms_mobile]
     cmp byte [rbx + r12], 0
     je .next
@@ -502,35 +523,48 @@ platforms_update_mobile:
     cmp byte [rbx + r12], 0
     je .next
 
-    ; FPU : angle = anim_tick * 0.05 * (index + 1)
-    fild dword [rel anim_tick]
-    fmul dword [rel fpu_point05]
-    mov eax, r12d
-    inc eax
-    mov [rel fpu_temp], eax
-    fild dword [rel fpu_temp]
-    fmulp st1, st0
-    ; sin(angle)
-    fsin
-    ; * amplitude 40
-    fmul dword [rel fpu_40]
-    ; Convertir en entier → fpu_temp
-    fistp dword [rel fpu_temp]
+    ; --- Obtenir la fréquence propre via bridge C ---
+    ; wrap_plat_freq(index) -> xmm0 (double)
+    mov ecx, r12d
+    call wrap_plat_freq             ; xmm0 = fréquence de cette plateforme
+    ; Sauvegarder la fréquence en mémoire pour FPU
+    movsd [rel fpu_freq_tmp], xmm0
 
-    ; x = base_x + offset
+    ; --- FPU : angle = anim_tick * freq + index * 0.7 ---
+    ; Partie 1 : anim_tick * freq
+    fild dword [rel anim_tick]          ; st0 = anim_tick (int->80bit)
+    fmul qword [rel fpu_freq_tmp]       ; st0 = anim_tick * freq
+
+    ; Partie 2 : index * 0.7 (désynchronisation par plateforme)
+    mov eax, r12d
+    mov [rel fpu_temp], eax
+    fild dword [rel fpu_temp]           ; st0 = index, st1 = tick*freq
+    fmul dword [rel fpu_desync]         ; st0 = index * 0.7
+    faddp                               ; st0 = tick*freq + index*0.7
+
+    ; Calculer sin(angle)
+    fsin                                ; st0 = sin(angle) dans [-1.0, +1.0]
+
+    ; Multiplier par amplitude (40 pixels)
+    fmul dword [rel fpu_40]             ; st0 = sin(angle) * 40
+
+    ; Convertir en entier (arrondi)
+    fistp dword [rel fpu_temp]          ; fpu_temp = offset pixels, pile vide
+
+    ; Appliquer l'offset à la position de base
     lea rbx, [rel platforms_base_x]
     mov eax, [rbx + r12*4]
     add eax, [rel fpu_temp]
 
-    ; Clamp [0, 720]
-    cmp eax, 0
+    ; Clamp [30, 690] (bords visibles, plateforme jamais collée aux murs)
+    cmp eax, 30
     jge .clamp_max
-    xor eax, eax
+    mov eax, 30
     jmp .store_x
 .clamp_max:
-    cmp eax, 720
+    cmp eax, 690
     jle .store_x
-    mov eax, 720
+    mov eax, 690
 .store_x:
     lea rbx, [rel platforms_x]
     mov [rbx + r12*4], eax
@@ -539,12 +573,13 @@ platforms_update_mobile:
     inc r12d
     jmp .loop
 .done:
+    add rsp, 56
     pop r12
     pop rbx
     ret
 
 ; ============================================================
-; platforms_cleanup_old
+; platforms_cleanup_old — Supprimer les plateformes sorties du bas
 ; ============================================================
 platforms_cleanup_old:
     push rbx
@@ -578,8 +613,7 @@ platforms_cleanup_old:
     ret
 
 ; ============================================================
-; platforms_generate_new
-; 4 pushes + sub 40 = 72. 72 mod 16 = 8. OK
+; platforms_generate_new — Créer une plateforme si nécessaire
 ; ============================================================
 platforms_generate_new:
     push rbx
@@ -588,12 +622,14 @@ platforms_generate_new:
     push r14
     sub rsp, 40
 
+    ; Si la plateforme la plus haute est encore à l'écran, ne rien faire
     mov eax, [rel highest_platform_y]
     mov edx, [rel camera_y]
     sub eax, edx
     cmp eax, 0
     jg .done
 
+    ; Chercher un slot libre
     xor r12d, r12d
     lea rbx, [rel platforms_active]
 .find_slot:
@@ -605,12 +641,14 @@ platforms_generate_new:
     jmp .find_slot
 
 .found:
+    ; Essayer le pool du thread platgen d'abord
     call platpool_consume
     test ecx, ecx
     jz .fallback
 
-    mov r13d, eax
-    mov r14d, edx
+    ; Plateforme depuis le pool
+    mov r13d, eax               ; x
+    mov r14d, edx               ; y
     lea rbx, [rel platforms_x]
     mov [rbx + r12*4], r13d
     lea rbx, [rel platforms_y]
@@ -619,11 +657,14 @@ platforms_generate_new:
     mov byte [rbx + r12], 1
     lea rbx, [rel platforms_base_x]
     mov [rbx + r12*4], r13d
-    ; Mobile si index % 4 == 0
-    mov eax, r12d
-    and eax, 3
+
+    ; --- MOBILE : 20% aléatoire ---
+    call random
+    xor edx, edx
+    mov ecx, 5
+    div ecx                     ; edx = random % 5
     lea rbx, [rel platforms_mobile]
-    cmp eax, 0
+    cmp edx, 0                  ; 1 chance sur 5 = 20%
     jne .not_mobile_pool
     mov byte [rbx + r12], 1
     jmp .pool_done
@@ -647,38 +688,35 @@ platforms_generate_new:
     ret
 
 ; ============================================================
-; create_one_platform — ALGORITHME ORIGINAL (LCG random)
-; + petit biais Perlin + difficulté progressive
-; r12d = index du slot
-; 2 pushes + sub 40 = 56. 56 mod 16 = 8. OK (CORRIGÉ)
+; create_one_platform — LCG + biais Perlin 2D (via bridge C)
 ; ============================================================
 create_one_platform:
     push r14
     push r15
-    sub rsp, 40                 ; CORRIGÉ (était 32)
+    sub rsp, 56
 
-    ; --- X : algorithme original LCG (comme avant) ---
-    ; random offset dans [-200, +200] centré sur highest_platform_x
+    ; --- X : LCG random offset [-200, +200] centré sur highest_x ---
     call random
     xor edx, edx
     mov ecx, 400
     div ecx                     ; edx = random % 400
-    sub edx, 200               ; offset = [-200, +199]
+    sub edx, 200               ; offset dans [-200, +199]
     add edx, [rel highest_platform_x]
 
-    ; Ajouter un petit biais Perlin (±50 pixels) pour cohérence
-    push rdx                    ; sauvegarder X brut
+    ; --- Biais Perlin 2D via bridge C (wrap_perlin2d) ---
+    mov dword [rsp+32], edx     ; sauvegarder X LCG brut (espace local, pas push)
+
     mov ecx, [rel highest_platform_y]
-    mov eax, ecx
-    cdq
-    mov ecx, 100
-    idiv ecx
-    mov ecx, eax
-    call noise1d                ; eax = [-128, +127]
-    ; Réduire à ±50
-    sar eax, 1                  ; eax ≈ [-64, +63]
-    pop rdx
-    add edx, eax               ; X final = random + petit biais Perlin
+    sar ecx, 7                  ; / 128 → coordonnée Perlin Y
+    mov edx, [rel highest_platform_x]
+    sar edx, 7                  ; / 128 → coordonnée Perlin X
+    call wrap_perlin2d          ; eax = bruit Perlin 2D double précision
+
+    ; Réduire le biais à 25%
+    sar eax, 2                  ; eax = biais Perlin 2D réduit [-32, +32]
+
+    mov edx, dword [rsp+32]     ; récupérer X LCG (depuis espace local)
+    add edx, eax               ; X final = LCG + petit biais Perlin 2D
 
     ; Clamp X à [0, 720]
     cmp edx, 0
@@ -703,17 +741,17 @@ create_one_platform:
     jl .easy
     cmp eax, 5000
     jl .medium
-    ; score >= 5000 : gap 55-100
+    ; score >= 5000 : gap 55..100
     mov r14d, 55
     mov r15d, 45
     jmp .gen_gap
 .easy:
-    ; score < 1000 : gap 30-60 (comme l'original)
+    ; score < 1000 : gap 30..60
     mov r14d, 30
     mov r15d, 30
     jmp .gen_gap
 .medium:
-    ; score 1000-5000 : gap 40-80
+    ; score 1000..5000 : gap 40..80
     mov r14d, 40
     mov r15d, 40
 
@@ -739,11 +777,13 @@ create_one_platform:
     lea rbx, [rel platforms_active]
     mov byte [rbx + r12], 1
 
-    ; Mobile si index % 4 == 0
-    mov eax, r12d
-    and eax, 3
+    ; --- MOBILE : 20% aléatoire ---
+    call random
+    xor edx, edx
+    mov ecx, 5
+    div ecx                     ; edx = random % 5
     lea rbx, [rel platforms_mobile]
-    cmp eax, 0
+    cmp edx, 0
     jne .not_mobile
     mov byte [rbx + r12], 1
     jmp .plat_created
@@ -753,14 +793,13 @@ create_one_platform:
     lea rbx, [rel platforms_hit_timer]
     mov byte [rbx + r12], 0
 
-    add rsp, 40
+    add rsp, 56
     pop r15
     pop r14
     ret
 
 ; ============================================================
 ; SSE2 SIMD collision — 4 plateformes par itération
-; 6 pushes + sub 40 = 88. 88 mod 16 = 8. OK
 ; ============================================================
 platforms_check_collision:
     push rbx
@@ -771,12 +810,11 @@ platforms_check_collision:
     push rbp
     sub rsp, 40
 
-    ; vel_y est un float IEEE 754 : bit 31 = signe
-    mov eax, [rel vel_y]
-    test eax, eax
-    js .col_done               ; négatif → monte
-    test eax, 0x7FFFFFFF
-    jz .col_done               ; zéro
+    ; vel_y est un double IEEE 754 64-bit : bit 63 = signe
+    mov rax, [rel vel_y]            ; charger double64 en entier
+    test rax, rax
+    js .col_done                    ; bit 63 = 1 → négatif → monte
+    jz .col_done                    ; zéro → pas de mouvement
 
     lea r14, [rel platforms_x]
     lea r15, [rel platforms_y]
@@ -787,28 +825,29 @@ platforms_check_collision:
     mov ebp, r9d
     add ebp, PLAYER_H
 
+    ; Préparer les registres SIMD SSE2 pour la détection 4-wide
     mov eax, r8d
     add eax, PLAYER_W
     movd xmm1, eax
-    pshufd xmm1, xmm1, 0
+    pshufd xmm1, xmm1, 0           ; xmm1 = [player_x+W, ...]
 
     movd xmm2, r8d
-    pshufd xmm2, xmm2, 0
+    pshufd xmm2, xmm2, 0           ; xmm2 = [player_x, ...]
 
     movd xmm3, ebp
-    pshufd xmm3, xmm3, 0
+    pshufd xmm3, xmm3, 0           ; xmm3 = [player_bottom, ...]
 
     mov eax, [rel camera_y]
     movd xmm5, eax
-    pshufd xmm5, xmm5, 0
+    pshufd xmm5, xmm5, 0           ; xmm5 = [camera_y, ...]
 
     mov eax, PLATFORM_W
     movd xmm6, eax
-    pshufd xmm6, xmm6, 0
+    pshufd xmm6, xmm6, 0           ; xmm6 = [PLATFORM_W, ...]
 
     mov eax, 16
     movd xmm7, eax
-    pshufd xmm7, xmm7, 0
+    pshufd xmm7, xmm7, 0           ; xmm7 = [16, ...]
 
     xor r12d, r12d
 
@@ -816,32 +855,38 @@ platforms_check_collision:
     cmp r12d, MAX_PLATFORMS
     jge .col_done
 
-    movdqu xmm8, [r14 + r12*4]
-    movdqu xmm9, [r15 + r12*4]
-    psubd xmm9, xmm5
+    ; Charger 4 X et 4 Y de plateformes simultanément (SSE2 4-wide)
+    movdqu xmm8, [r14 + r12*4]     ; xmm8 = [x0, x1, x2, x3]
+    movdqu xmm9, [r15 + r12*4]     ; xmm9 = [y0, y1, y2, y3]
+    psubd xmm9, xmm5               ; xmm9 = [y-cam, ...] = screen Y
 
+    ; Test X overlap : player_x+W > plat_x
     movdqa xmm10, xmm1
-    pcmpgtd xmm10, xmm8
+    pcmpgtd xmm10, xmm8            ; xmm10 = mask (player_x+W > plat_x)
 
+    ; Test X overlap : plat_x+W > player_x
     movdqa xmm11, xmm8
     paddd xmm11, xmm6
-    pcmpgtd xmm11, xmm2
+    pcmpgtd xmm11, xmm2            ; xmm11 = mask (plat_x+W > player_x)
 
+    ; Test Y overlap haut : player_bottom+1 > plat_y
     movdqa xmm12, xmm3
     mov eax, 1
     movd xmm0, eax
     pshufd xmm0, xmm0, 0
     paddd xmm12, xmm0
-    pcmpgtd xmm12, xmm9
+    pcmpgtd xmm12, xmm9            ; xmm12 = mask
 
+    ; Test Y overlap bas : plat_y+16+1 > player_bottom
     movdqa xmm0, xmm9
     paddd xmm0, xmm7
     mov eax, 1
     movd xmm4, eax
     pshufd xmm4, xmm4, 0
     paddd xmm0, xmm4
-    pcmpgtd xmm0, xmm3
+    pcmpgtd xmm0, xmm3             ; xmm0 = mask
 
+    ; AND de tous les masques → collision si tous vrais
     pand xmm10, xmm11
     pand xmm10, xmm12
     pand xmm10, xmm0
@@ -850,6 +895,7 @@ platforms_check_collision:
     test eax, eax
     jz .simd_next
 
+    ; Trouver quelle lane a la collision
     test eax, 0x000F
     jz .check_lane1
     mov ebx, r12d
@@ -887,20 +933,18 @@ platforms_check_collision:
     je .simd_next
 
 .collision_hit:
-    ; ebx = index plateforme touchée
-    ; Rebond : vel_y = -12.0f
-    mov eax, [rel bounce_vel]
-    mov [rel vel_y], eax
+    ; Rebond : vel_y = -12.0 (double64)
+    mov rax, [rel bounce_vel]       ; charger double64 -12.0
+    mov [rel vel_y], rax            ; stocker double64
 
     ; Son de saut
     mov ecx, CMD_PLAY_JUMP
     call audio_post_cmd
 
-    ; Flash visuel (30 frames, purement cosmétique)
-    lea rax, [rel platforms_hit_timer]
-    mov byte [rax + rbx], 30
+    ; --- NOUVEAU : Désactiver la plateforme instantanément ---
+    mov byte [r13 + rbx], 0         ; La plateforme est détruite et disparait visuellement
 
-    ; Émettre 8 particules
+    ; Émettre 16 particules à l'endroit exact où était la plateforme
     call emit_particles
 
     jmp .col_done
@@ -920,49 +964,70 @@ platforms_check_collision:
     ret
 
 ; ============================================================
-; emit_particles — 8 particules depuis la plateforme ebx
-; Appelé depuis collision_hit (rsp = 0 mod 16 à ce point)
-; 4 pushes + sub 48 = 80. 80 mod 16 = 0.
-; Entrée: rsp = 0 mod 16 (pas via call standard, même contexte)
-; Pour robustesse : on utilise [rsp+32] pour sauvegarder l'index
-; au lieu de push/pop autour des calls.
+; emit_particles — Émettre 16 particules depuis la plateforme
 ; ============================================================
 emit_particles:
     push r12
     push r13
     push r14
     push r15
-    sub rsp, 48                 ; shadow space + local save
+    sub rsp, 48
 
-    ; Position de la plateforme
+    ; Position de la plateforme (en coordonnées écran)
     lea rax, [rel platforms_x]
-    mov r13d, [rax + rbx*4]
+    mov r13d, [rax + rbx*4]     ; r13d = plat_x
     lea rax, [rel platforms_y]
-    mov r14d, [rax + rbx*4]
+    mov r14d, [rax + rbx*4]     ; r14d = plat_y monde
     mov eax, [rel camera_y]
-    sub r14d, eax
+    sub r14d, eax               ; r14d = plat_y écran
 
-    ; Couleur
+    ; Couleur avec éclat initial (OR +0x30 sur chaque composante BGR)
     mov r15d, [rel platform_color]
+    mov eax, r15d
+    or eax, 0x00303030          ; éclat blanc partiel au départ
+    ; Clamp chaque composante à 255
+    ; R
+    mov edx, eax
+    and edx, 0xFF
+    cmp edx, 255
+    jle .r_eclat_ok
+    or eax, 0x000000FF
+.r_eclat_ok:
+    ; G
+    mov edx, eax
+    shr edx, 8
+    and edx, 0xFF
+    cmp edx, 255
+    jle .g_eclat_ok
+    or eax, 0x0000FF00
+.g_eclat_ok:
+    ; B
+    mov edx, eax
+    shr edx, 16
+    and edx, 0xFF
+    cmp edx, 255
+    jle .b_eclat_ok
+    or eax, 0x00FF0000
+.b_eclat_ok:
+    mov r15d, eax               ; couleur avec éclat
 
-    ; Chercher 8 slots libres
-    xor r12d, r12d              ; compteur émissions
-    xor ecx, ecx               ; index particule
+    ; Chercher 16 slots libres
+    xor r12d, r12d              ; compteur émissions (max 16)
+    xor ecx, ecx               ; index particule (0..MAX_PARTICLES-1)
 
 .find_part:
     cmp ecx, MAX_PARTICLES
     jge .emit_done
-    cmp r12d, 8
+    cmp r12d, 16                ; CORRIGÉ : 16 particules (vs 8)
     jge .emit_done
 
     lea rax, [rel part_life]
     cmp byte [rax + rcx], 0
     jne .next_part
 
-    ; Sauvegarder l'index dans une variable statique (pas sur la pile)
     mov [rel emit_save_idx], ecx
 
-    ; x = plat_x + random offset dans [0, PLATFORM_W]
+    ; x = plat_x + offset aléatoire dans [0, PLATFORM_W]
     call random
     xor edx, edx
     mov ecx, PLATFORM_W
@@ -972,37 +1037,37 @@ emit_particles:
     lea rax, [rel part_x]
     mov [rax + rcx*4], edx
 
-    ; y = plat_y (screen)
+    ; y = plat_y écran
     lea rax, [rel part_y]
     mov [rax + rcx*4], r14d
 
-    ; vx = random(-3..+3)
+    ; vx = random(-5..+5)
     mov [rel emit_save_idx], ecx
     call random
     xor edx, edx
-    mov ecx, 7
+    mov ecx, 11                 ; 11 valeurs : 0..10
     div ecx
-    sub edx, 3
+    sub edx, 5                 ; shift vers [-5, +5]
     mov ecx, [rel emit_save_idx]
     lea rax, [rel part_vx]
     mov [rax + rcx*4], edx
 
-    ; vy = random(-5..-1)
+    ; vy = random(-8..-2)
     mov [rel emit_save_idx], ecx
     call random
     xor edx, edx
-    mov ecx, 5
+    mov ecx, 7                  ; 7 valeurs : 0..6
     div ecx
-    sub edx, 5
+    sub edx, 8                 ; shift vers [-8, -2]
     mov ecx, [rel emit_save_idx]
     lea rax, [rel part_vy]
     mov [rax + rcx*4], edx
 
-    ; life = 30
+    ; life = 60
     lea rax, [rel part_life]
-    mov byte [rax + rcx], 30
+    mov byte [rax + rcx], 60
 
-    ; couleur
+    ; Couleur avec éclat
     lea rax, [rel part_color]
     mov [rax + rcx*4], r15d
 
@@ -1021,12 +1086,15 @@ emit_particles:
     ret
 
 ; ============================================================
-; particles_update — x += vx, y += vy, vy += 1, life--
+; particles_update — Physique des particules
 ; ============================================================
 particles_update:
     push rbx
     push r12
     xor r12d, r12d
+
+    ; Incrémenter le compteur de gravité douce
+    inc dword [rel part_grav_tick]
 
 .loop:
     cmp r12d, MAX_PARTICLES
@@ -1036,20 +1104,31 @@ particles_update:
     cmp byte [rbx + r12], 0
     je .next
 
+    ; Décrémenter la durée de vie
     dec byte [rbx + r12]
 
+    ; x += vx
     lea rbx, [rel part_vx]
     mov eax, [rbx + r12*4]
     lea rbx, [rel part_x]
     add [rbx + r12*4], eax
 
+    ; y += vy
     lea rbx, [rel part_vy]
     mov eax, [rbx + r12*4]
     lea rbx, [rel part_y]
     add [rbx + r12*4], eax
 
+    ; Gravité douce : vy += 1 seulement tous les 3 frames
+    mov eax, [rel part_grav_tick]
+    mov edx, 0
+    mov ecx, 3
+    div ecx
+    test edx, edx
+    jnz .next                   ; pas le bon frame → skip
+
     lea rbx, [rel part_vy]
-    inc dword [rbx + r12*4]
+    inc dword [rbx + r12*4]     ; vy += 1 (1 fois sur 3)
 
 .next:
     inc r12d
@@ -1060,7 +1139,7 @@ particles_update:
     ret
 
 ; ============================================================
-; particles_render — 2x2 pixels, dégradé selon life
+; particles_render — Taille adaptative selon la durée de vie
 ; ============================================================
 particles_render:
     push rbx
@@ -1083,72 +1162,109 @@ particles_render:
     jz .next
 
     lea rbx, [rel part_x]
-    mov r13d, [rbx + r12*4]
+    mov r13d, [rbx + r12*4]     ; r13d = x
     lea rbx, [rel part_y]
-    mov r14d, [rbx + r12*4]
+    mov r14d, [rbx + r12*4]     ; r14d = y
 
-    ; Bounds check (2x2 pixels)
+    ; Bounds check conservateur (3×3 max → marge 3)
     cmp r13d, 0
     jl .next
-    cmp r13d, SCREEN_W - 2
+    cmp r13d, SCREEN_W - 3
     jge .next
     cmp r14d, 0
     jl .next
-    cmp r14d, SCREEN_H - 2
+    cmp r14d, SCREEN_H - 3
     jge .next
 
-    ; Couleur + fade
+    ; --- Calculer couleur avec fade ---
     lea rbx, [rel part_color]
-    mov r15d, [rbx + r12*4]
+    mov r15d, [rbx + r12*4]     ; couleur originale
+
     lea rbx, [rel part_life]
-    movzx eax, byte [rbx + r12]
-    mov ecx, 30
-    sub ecx, eax
-    shl ecx, 2
-    cmp ecx, 120
-    jle .fade_ok
-    mov ecx, 120
-.fade_ok:
+    movzx eax, byte [rbx + r12] ; eax = life (0..60)
+
+    ; Intensité = life * 4 (max 240), divise chaque composante
+    mov ecx, eax
+    imul ecx, 255
+    xor edx, edx
+    mov ebx, 60
+    div ebx                     ; eax = life*255/60 = [0,255]
+    mov ebx, eax                ; ebx = fade factor [0,255]
+
+    ; Appliquer le fade à chaque composante
+    ; R
     mov eax, r15d
     and eax, 0xFF
-    add eax, ecx
-    cmp eax, 255
-    jle .r_ok
-    mov eax, 255
-.r_ok:
-    mov edx, eax
+    imul eax, ebx
+    xor edx, edx
+    mov ecx, 255
+    div ecx
+    mov esi, eax                ; R final
 
+    ; G
     mov eax, r15d
     shr eax, 8
     and eax, 0xFF
-    add eax, ecx
-    cmp eax, 255
-    jle .g_ok
-    mov eax, 255
-.g_ok:
+    imul eax, ebx
+    xor edx, edx
+    mov ecx, 255
+    div ecx
     shl eax, 8
-    or edx, eax
+    or esi, eax                 ; |= G<<8
 
+    ; B
     mov eax, r15d
     shr eax, 16
     and eax, 0xFF
-    add eax, ecx
-    cmp eax, 255
-    jle .b_ok
-    mov eax, 255
-.b_ok:
+    imul eax, ebx
+    xor edx, edx
+    mov ecx, 255
+    div ecx
     shl eax, 16
-    or edx, eax
+    or esi, eax                 ; |= B<<16
 
-    ; 2x2 pixels
+    ; --- Calculer adresse de base ---
     mov eax, r14d
     imul eax, SCREEN_W
-    add eax, r13d
-    mov [rbp + rax*4], edx
-    mov [rbp + rax*4 + 4], edx
-    add eax, SCREEN_W
-    mov [rbp + rax*4], edx
-    mov [rbp + rax*4 + 4], edx
+    add eax, r13d               ; eax = y*800 + x
+
+    ; --- Choisir la taille selon life ---
+    lea rbx, [rel part_life]
+    movzx ecx, byte [rbx + r12]
+
+    cmp ecx, 40
+    jg .size_3x3                ; life > 40 → 3×3
+    cmp ecx, 20
+    jg .size_2x2                ; life > 20 → 2×2
+    jmp .size_1x1               ; life <= 20 → 1×1
+
+.size_3x3:
+    ; Dessiner 3 lignes × 3 colonnes = 9 pixels
+    mov [rbp + rax*4       ], esi
+    mov [rbp + rax*4 + 4   ], esi
+    mov [rbp + rax*4 + 8   ], esi
+    lea edx, [eax + SCREEN_W]
+    mov [rbp + rdx*4       ], esi
+    mov [rbp + rdx*4 + 4   ], esi
+    mov [rbp + rdx*4 + 8   ], esi
+    lea edx, [eax + SCREEN_W*2]
+    mov [rbp + rdx*4       ], esi
+    mov [rbp + rdx*4 + 4   ], esi
+    mov [rbp + rdx*4 + 8   ], esi
+    jmp .next
+
+.size_2x2:
+    ; Dessiner 2 lignes × 2 colonnes = 4 pixels
+    mov [rbp + rax*4    ], esi
+    mov [rbp + rax*4 + 4], esi
+    lea edx, [eax + SCREEN_W]
+    mov [rbp + rdx*4    ], esi
+    mov [rbp + rdx*4 + 4], esi
+    jmp .next
+
+.size_1x1:
+    ; Dessiner 1 pixel
+    mov [rbp + rax*4], esi
 
 .next:
     inc r12d
@@ -1163,7 +1279,7 @@ particles_render:
     ret
 
 ; ============================================================
-; platforms_render — HSV color + flash visuel
+; platforms_render — Rendu avec couleur HSV, forme arrondie
 ; ============================================================
 platforms_render:
     push rbx
@@ -1190,14 +1306,14 @@ platforms_render:
     cmp byte [r13 + r12], 0
     je .next_platform
 
-    mov ebx, [r14 + r12*4]
-    mov edi, [r15 + r12*4]
+    mov ebx, [r14 + r12*4]     ; x plateforme
+    mov edi, [r15 + r12*4]     ; y monde
 
-    ; Screen Y
+    ; Convertir en Y écran
     mov eax, [rel camera_y]
     sub edi, eax
 
-    ; Couleur : flash blanc si hit_timer actif
+    ; Couleur : flash blanc si hit_timer actif (ne sera plus très visible à cause de la destruction, mais on garde par sécurité)
     mov esi, ebp
     lea rax, [rel platforms_hit_timer]
     movzx ecx, byte [rax + r12]
@@ -1210,8 +1326,25 @@ platforms_render:
 
     mov r8d, PLATFORM_H
 .y_loop:
+
+    ; --- NOUVEAU : Lire la marge pour créer la forme arrondie ---
+    mov ecx, PLATFORM_H
+    sub ecx, r8d                 ; ecx = index de la ligne courante (0 à 11)
+    lea rax, [rel plat_margins]
+    movzx r11d, byte [rax + rcx] ; r11d = marge pour cette ligne (ex: 4 pixels aux extrémités)
+
     mov r9d, PLATFORM_W
 .x_loop:
+
+    ; --- NOUVEAU : Ignorer les pixels situés dans la marge ---
+    cmp r9d, r11d
+    jle .skip_pixel              ; Skip les pixels sur le bord droit
+    mov eax, PLATFORM_W
+    sub eax, r11d
+    cmp r9d, eax
+    jg .skip_pixel               ; Skip les pixels sur le bord gauche
+
+    ; --- Rendu classique du pixel ---
     mov eax, edi
     add eax, PLATFORM_H
     sub eax, r8d

@@ -244,27 +244,34 @@ WndProc:
     mov eax, [rel game_over]
     cmp eax, 1
     jne .def
-    mov rax, r9
-    mov rbx, rax
-    and rbx, 0xFFFF
+    ; r10 = registre volatile (pas besoin de sauvegarder), remplace rbx
+    mov r10, r9                    ; r10 = lParam (X bas 16 bits, Y haut 16 bits)
+    mov rax, r10
+    and r10d, 0xFFFF               ; r10d = X écran
     shr rax, 16
-    and rax, 0xFFFF
-    cmp rbx, 200
+    and eax, 0xFFFF                ; eax  = Y écran
+    cmp r10d, 200
     jl .def
-    cmp rbx, 600
+    cmp r10d, 600
     jg .def
-    cmp rax, 250
+    cmp eax, 250
     jl .def
-    cmp rax, 450
+    cmp eax, 450
     jg .def
+    ; Win64 : shadow space obligatoire + RSP doit être ≡0 mod16 avant call
+    ; Entrée WndProc : RSP≡8. sub 40 (40 mod16=8) → RSP≡0. OK.
+    sub rsp, 40
     call game_init
+    add rsp, 40
     xor eax, eax
     ret
 .check_destroy:
     cmp edx, WM_DESTROY
     jne .check_paint
+    sub rsp, 40                    ; shadow space + alignement (RSP≡8→0 avant call)
     xor ecx, ecx
     call PostQuitMessage
+    add rsp, 40
     xor eax, eax
     ret
 .check_paint:

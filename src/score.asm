@@ -9,11 +9,13 @@ global draw_number_at
 global draw_text_gameover
 global draw_text_restart
 global draw_game_over
-global sky_render            ; Dégradé de ciel SIMD
+global sky_render            ; Dégradé de ciel SIMD avec smooth coloring
 
 extern player_y
 extern backbuffer
 extern camera_y
+
+; (wrap_smooth_log retiré : remplacé par formule linéaire directe dans sky_render)
 
 %define SCREEN_W 800
 %define SCREEN_H 600
@@ -43,6 +45,18 @@ letters_bitmap:
     db 1,0,1, 1,0,1, 1,0,1, 1,0,1, 0,1,0 ; V (8)
     db 0,1,0, 0,1,0, 0,1,0, 0,0,0, 0,1,0 ; ! (9)
 
+; --- Constantes pour sky_render ---
+; Couleur de départ : 0x0087CEEB = Sky Blue Windows
+; En format GDI DIB (BGR32) : R=0x87=135, G=0xCE=206, B=0xEB=235
+sky_start_R dd 135          ; R de départ (0x87)
+sky_start_G dd 206          ; G de départ (0xCE)
+sky_start_B dd 235          ; B de départ (0xEB)
+
+; Couleur d'arrivée : nuit profonde
+sky_end_R dd 0              ; R nuit
+sky_end_G dd 0              ; G nuit
+sky_end_B dd 50             ; B nuit (légère teinte bleue)
+
 section .bss
 global current_score
 current_score resd 1
@@ -50,11 +64,13 @@ highest_y resd 1
 start_y   resd 1
 text_color resd 1
 
+; (sky_alt_smooth retiré : plus utilisé)
+
 section .text
 
 score_init:
     mov dword [rel current_score], 0
-    mov dword [rel highest_y], 520 
+    mov dword [rel highest_y], 520
     mov dword [rel start_y], 520
     ret
 
@@ -82,34 +98,34 @@ score_get:
 draw_text_gameover:
     push r14
     push r15
-    mov dword [rel text_color], 0x00FFFFFF 
-    mov r14d, 275 
-    mov r15d, 150 
-    mov rax, 2 
+    mov dword [rel text_color], 0x00FFFFFF
+    mov r14d, 275
+    mov r15d, 150
+    mov rax, 2
     call draw_letter_raw
     add r14d, 25
-    mov rax, 0 
+    mov rax, 0
     call draw_letter_raw
     add r14d, 25
-    mov rax, 3 
+    mov rax, 3
     call draw_letter_raw
     add r14d, 25
-    mov rax, 1 
+    mov rax, 1
     call draw_letter_raw
-    mov r14d, 400 
-    mov rax, 4 
-    call draw_letter_raw
-    add r14d, 25
-    mov rax, 8 
+    mov r14d, 400
+    mov rax, 4
     call draw_letter_raw
     add r14d, 25
-    mov rax, 1 
+    mov rax, 8
     call draw_letter_raw
     add r14d, 25
-    mov rax, 5 
+    mov rax, 1
     call draw_letter_raw
     add r14d, 25
-    mov rax, 9 
+    mov rax, 5
+    call draw_letter_raw
+    add r14d, 25
+    mov rax, 9
     call draw_letter_raw
     pop r15
     pop r14
@@ -119,27 +135,27 @@ draw_text_restart:
     push r14
     push r15
     mov dword [rel text_color], 0x00FFFFFF
-    mov r14d, 312 
-    mov r15d, 315 
-    mov rax, 5 
+    mov r14d, 312
+    mov r15d, 315
+    mov rax, 5
     call draw_letter_raw
     add r14d, 25
-    mov rax, 1 
+    mov rax, 1
     call draw_letter_raw
     add r14d, 25
-    mov rax, 6 
+    mov rax, 6
     call draw_letter_raw
     add r14d, 25
-    mov rax, 7 
+    mov rax, 7
     call draw_letter_raw
     add r14d, 25
-    mov rax, 0 
+    mov rax, 0
     call draw_letter_raw
     add r14d, 25
-    mov rax, 5 
+    mov rax, 5
     call draw_letter_raw
     add r14d, 25
-    mov rax, 7 
+    mov rax, 7
     call draw_letter_raw
     pop r15
     pop r14
@@ -151,22 +167,22 @@ draw_letter_raw:
     imul eax, 15
     lea rsi, [rel letters_bitmap]
     add rsi, rax
-    xor ecx, ecx 
+    xor ecx, ecx
 .line:
     xor edx, edx
 .col:
-    lodsb 
+    lodsb
     cmp al, 0
     je .skip
     push r8
     push r9
     mov r8d, r14d
-    lea eax, [edx*4] 
-    add eax, edx     
+    lea eax, [edx*4]
+    add eax, edx
     add r8d, eax
     mov r9d, r15d
-    lea eax, [ecx*4] 
-    add eax, ecx     
+    lea eax, [ecx*4]
+    add eax, ecx
     add r9d, eax
     call draw_fat_pixel_large
     pop r9
@@ -189,9 +205,9 @@ draw_number_at:
     push r14
     push r15
     sub rsp, 40
-    mov r14d, r8d  
-    mov r15d, r9d  
-    mov dword [rel text_color], 0x00FFD700 
+    mov r14d, r8d
+    mov r15d, r9d
+    mov dword [rel text_color], 0x00FFD700
     mov eax, ecx
     mov rbx, 10
     xor ecx, ecx
@@ -227,11 +243,11 @@ draw_single_digit:
     imul eax, 15
     lea rsi, [rel digits_bitmap]
     add rsi, rax
-    xor ecx, ecx 
+    xor ecx, ecx
 .l:
     xor edx, edx
 .c:
-    lodsb 
+    lodsb
     cmp al, 0
     je .s
     push r8
@@ -322,41 +338,39 @@ score_render:
     call draw_number_at
     ret
 
-; --- FONCTION MANQUANTE AJOUTÉE ICI ---
 draw_game_over:
     push rbx
     push r12
     push r13
-    
+
     lea rsi, [rel backbuffer]
-    
-    ; 1. Fond sombre
-    mov r12d, 100       
+
+    ; Fond sombre
+    mov r12d, 100
 .y_rect:
-    mov r13d, 150       
+    mov r13d, 150
 .x_rect:
     mov eax, r12d
     imul eax, SCREEN_W
     add eax, r13d
-    mov dword [rsi + rax*4], 0x00333333 
+    mov dword [rsi + rax*4], 0x00333333
     inc r13d
     cmp r13d, 650
     jl .x_rect
     inc r12d
     cmp r12d, 500
     jl .y_rect
-    
-    ; 2. Texte GAME OVER
+
     call draw_text_gameover
-    
-    ; 3. Centrage score
+
+    ; Score centré
     mov eax, [rel current_score]
-    mov r10d, 1     
+    mov r10d, 1
     mov ebx, 10
     test eax, eax
     jz .calc_pos
-    mov r11d, eax   
-    xor r10d, r10d  
+    mov r11d, eax
+    xor r10d, r10d
 .count:
     xor edx, edx
     mov eax, r11d
@@ -367,15 +381,14 @@ draw_game_over:
     jnz .count
 .calc_pos:
     mov eax, r10d
-    imul eax, 15    
-    shr eax, 1      
-    mov r8d, 400    
-    sub r8d, eax    
+    imul eax, 15
+    shr eax, 1
+    mov r8d, 400
+    sub r8d, eax
     mov ecx, [rel current_score]
-    mov r9d, 230    
+    mov r9d, 230
     call draw_number_at
-    
-    ; 4. Restart
+
     call draw_text_restart
 
     pop r13
@@ -384,15 +397,7 @@ draw_game_over:
     ret
 
 ; ============================================================
-; sky_render — Dégradé vertical de ciel adaptatif (remplace clear_backbuffer)
-; Couleur top/bottom calculée depuis camera_y
-; Utilise SSE2 pour remplir 4 pixels par store
-; ============================================================
-; Formule couleur :
-;   altitude = clamp(abs(camera_y) / 200, 0, 255)
-;   Top    : R = 0,             G = alt/3,      B = 50 + alt*0.6
-;   Bottom : R = 20 + alt/4,    G = 40 + alt/2, B = 80 + alt*0.5
-;   Chaque ligne interpole linéairement entre top et bottom
+; sky_render — Dégradé de ciel avec smooth coloring Mandelbrot
 ; ============================================================
 sky_render:
     push rbx
@@ -403,155 +408,168 @@ sky_render:
     push rbp
     push rsi
     push rdi
+    sub rsp, 40                     ; shadow space (pas d'appel C ici, mais bonne pratique)
 
     lea rdi, [rel backbuffer]
 
-    ; Calculer altitude = clamp(abs(camera_y) / 200, 0, 255)
+    ; --- Altitude linéaire : ebp = clamp(abs(camera_y) / 60, 0, 255) ---
     mov eax, [rel camera_y]
-    neg eax
+    neg eax                         ; abs(camera_y)
     cmp eax, 0
     jge .sky_pos
     xor eax, eax
 .sky_pos:
     xor edx, edx
-    mov ecx, 200
-    div ecx                     ; eax = abs(camera_y) / 200
+    mov ecx, 60                     ; diviseur : transition lente
+    div ecx                         ; eax = abs(camera_y) / 60
     cmp eax, 255
-    jle .sky_clamped
+    jle .sky_alt_ok
     mov eax, 255
-.sky_clamped:
-    mov ebp, eax                ; ebp = altitude (0..255)
+.sky_alt_ok:
+    mov ebp, eax                    ; ebp = altitude [0,255]
 
-    ; --- Calculer couleur top (BGR32) ---
-    ; R_top = 0
-    xor r12d, r12d
-    ; G_top = altitude / 3
-    mov eax, ebp
+    ; --- Calculer top_R = lerp(135, 0, ebp/255) ---
+    ; R top
+    mov eax, [rel sky_start_R]      ; eax = 135
+    mov ecx, 255
+    sub ecx, ebp                    ; ecx = 255 - alt_smooth
+    imul eax, ecx                   ; eax = 135 * (255 - alt)
     xor edx, edx
-    mov ecx, 3
-    div ecx
-    mov r13d, eax               ; G_top
-    ; B_top = clamp(50 + altitude * 3 / 5, 0, 255)
-    mov eax, ebp
-    imul eax, 3
-    xor edx, edx
-    mov ecx, 5
-    div ecx
-    add eax, 50
-    cmp eax, 255
-    jle .bt_ok
-    mov eax, 255
-.bt_ok:
-    mov r14d, eax               ; B_top
+    mov ecx, 255
+    div ecx                         ; eax = top_R [0,135]
+    mov r12d, eax                   ; r12d = top_R
 
-    ; top_color = B_top<<16 | G_top<<8 | R_top
-    mov eax, r14d
+    ; G top
+    mov eax, [rel sky_start_G]      ; eax = 206
+    mov ecx, 255
+    sub ecx, ebp
+    imul eax, ecx                   ; eax = 206 * (255 - alt)
+    xor edx, edx
+    mov ecx, 255
+    div ecx                         ; eax = top_G [0,206]
+    mov r13d, eax                   ; r13d = top_G
+
+    ; B top = lerp(235, 50, alt/255) = 235 - (235-50)*alt/255 = 235 - 185*alt/255
+    mov eax, 185                    ; 235 - 50 = 185
+    imul eax, ebp                   ; eax = 185 * alt
+    xor edx, edx
+    mov ecx, 255
+    div ecx                         ; eax = delta_B
+    mov ecx, [rel sky_start_B]      ; ecx = 235
+    sub ecx, eax                    ; ecx = 235 - delta = top_B
+    cmp ecx, [rel sky_end_B]        ; ne pas descendre sous sky_end_B (50)
+    jge .b_ok
+    mov ecx, 50
+.b_ok:
+    mov r14d, ecx                   ; r14d = top_B
+
+    ; --- Assembler top_color (0x00RRGGBB) ---
+    mov eax, r12d                   ; R
     shl eax, 16
-    mov ecx, r13d
+    mov ecx, r13d                   ; G
     shl ecx, 8
     or eax, ecx
-    or eax, r12d
-    mov r12d, eax               ; r12d = top_color
+    or eax, r14d                    ; B
+    mov r12d, eax                   ; r12d = top_color RGB32
 
-    ; --- Calculer couleur bottom (BGR32) ---
-    ; R_bot = 20 + altitude / 4
-    mov eax, ebp
-    shr eax, 2
+    ; --- Calculer bottom_color = top + (20, 15, 10) clampé ---
+    ; R_bot = clamp(top_R + 20, 0, 255)
+    mov eax, r12d
+    shr eax, 16
+    and eax, 0xFF                   ; extraire R de top_color
     add eax, 20
     cmp eax, 255
     jle .rb_ok
     mov eax, 255
 .rb_ok:
-    mov r13d, eax               ; R_bot
+    mov r13d, eax                   ; R_bot
 
-    ; G_bot = 40 + altitude / 2
-    mov eax, ebp
-    shr eax, 1
-    add eax, 40
+    ; G_bot = clamp(top_G + 15, 0, 255)
+    mov eax, r12d
+    shr eax, 8
+    and eax, 0xFF                   ; extraire G de top_color
+    add eax, 15
     cmp eax, 255
     jle .gb_ok
     mov eax, 255
 .gb_ok:
-    mov r14d, eax               ; G_bot
+    mov r14d, eax                   ; G_bot
 
-    ; B_bot = clamp(80 + altitude / 2, 0, 255)
-    mov eax, ebp
-    shr eax, 1
-    add eax, 80
+    ; B_bot = clamp(top_B + 10, 0, 255)
+    mov eax, r12d
+    and eax, 0xFF                   ; extraire B de top_color
+    add eax, 10
     cmp eax, 255
     jle .bb_ok
     mov eax, 255
 .bb_ok:
-    mov r15d, eax               ; B_bot
+    mov r15d, eax                   ; B_bot
 
-    ; bottom_color
-    mov eax, r15d
+    ; Assembler bottom_color 0x00RRGGBB
+    mov eax, r13d                   ; R_bot
     shl eax, 16
-    mov ecx, r14d
+    mov ecx, r14d                   ; G_bot
     shl ecx, 8
     or eax, ecx
-    or eax, r13d
-    mov r13d, eax               ; r13d = bottom_color
+    or eax, r15d                    ; B_bot
+    mov r13d, eax                   ; r13d = bottom_color
 
-    ; --- Extraire composantes pour interpolation ---
-    ; top: r12d = packed, bottom: r13d = packed
-    ; On interpole par ligne : color(y) = top + (bottom - top) * y / 600
-
-    ; Extraire R, G, B top
-    mov eax, r12d
-    and eax, 0xFF
-    mov ebp, eax                ; R_top (on réutilise ebp)
-
-    mov eax, r12d
-    shr eax, 8
-    and eax, 0xFF
-    mov esi, eax                ; G_top (dans esi)
-
+    ; --- Extraire composantes R,G,B de top et bottom pour interpolation ---
+    ; top_R = (r12d>>16) & 0xFF → rbp
     mov eax, r12d
     shr eax, 16
     and eax, 0xFF
-    mov ebx, eax                ; B_top (dans ebx)
+    mov ebp, eax                    ; rbp = top_R
 
-    ; Extraire R, G, B bottom et calculer deltas * 256
-    ; delta_R = (R_bot - R_top)
+    ; top_G = (r12d>>8) & 0xFF → rsi
+    mov eax, r12d
+    shr eax, 8
+    and eax, 0xFF
+    mov esi, eax                    ; esi = top_G
+
+    ; top_B = r12d & 0xFF → rbx
+    mov eax, r12d
+    and eax, 0xFF
+    mov ebx, eax                    ; ebx = top_B
+
+    ; delta_R = (bot_R - top_R) << 8  → push
     mov eax, r13d
+    shr eax, 16
     and eax, 0xFF
     sub eax, ebp
-    ; delta_R * 256 pour précision fixe
     shl eax, 8
-    push rax                    ; [rsp] = delta_R << 8
+    push rax                        ; [rsp+?] = delta_R<<8
 
+    ; delta_G = (bot_G - top_G) << 8  → push
     mov eax, r13d
     shr eax, 8
     and eax, 0xFF
     sub eax, esi
     shl eax, 8
-    push rax                    ; [rsp] = delta_G << 8, [rsp+8] = delta_R << 8
+    push rax                        ; [rsp+?] = delta_G<<8
 
+    ; delta_B = (bot_B - top_B) << 8  → push
     mov eax, r13d
-    shr eax, 16
     and eax, 0xFF
     sub eax, ebx
     shl eax, 8
-    push rax                    ; [rsp] = delta_B << 8
+    push rax                        ; [rsp] = delta_B<<8
 
-    ; Maintenant itérer sur les 600 lignes
-    xor r14d, r14d              ; r14d = ligne courante (0..599)
+    ; --- Boucle sur 600 lignes ---
+    xor r14d, r14d                  ; r14d = ligne courante (0..599)
 
 .sky_line:
     cmp r14d, SCREEN_H
     jge .sky_done
 
-    ; R = R_top + delta_R * y / 600
-    ; En fixed point: R = R_top + (delta_R<<8) * y / 600 >> 8
-    mov eax, [rsp + 16]         ; delta_R << 8
+    ; R(y) = top_R + delta_R * y / 600
+    mov eax, [rsp + 16]             ; delta_R<<8
     imul eax, r14d
     cdq
     mov ecx, SCREEN_H
     idiv ecx
     sar eax, 8
-    add eax, ebp                ; + R_top
-    ; Clamp
+    add eax, ebp                    ; + top_R
     cmp eax, 0
     jge .sr_pos
     xor eax, eax
@@ -560,16 +578,17 @@ sky_render:
     jle .sr_ok
     mov eax, 255
 .sr_ok:
-    mov r15d, eax               ; R final
+    shl eax, 16                     ; On décale le R vers sa place
+    mov r15d, eax                   ; R final
 
-    ; G
-    mov eax, [rsp + 8]          ; delta_G << 8
+    ; G(y) = top_G + delta_G * y / 600
+    mov eax, [rsp + 8]              ; delta_G<<8
     imul eax, r14d
     cdq
     mov ecx, SCREEN_H
     idiv ecx
     sar eax, 8
-    add eax, esi                ; + G_top
+    add eax, esi                    ; + top_G
     cmp eax, 0
     jge .sg_pos
     xor eax, eax
@@ -579,16 +598,16 @@ sky_render:
     mov eax, 255
 .sg_ok:
     shl eax, 8
-    or r15d, eax                ; |= G << 8
+    or r15d, eax                    ; |= G<<8
 
-    ; B
-    mov eax, [rsp]              ; delta_B << 8
+    ; B(y) = top_B + delta_B * y / 600
+    mov eax, [rsp]                  ; delta_B<<8
     imul eax, r14d
     cdq
     mov ecx, SCREEN_H
     idiv ecx
     sar eax, 8
-    add eax, ebx                ; + B_top
+    add eax, ebx                    ; + top_B
     cmp eax, 0
     jge .sb_pos
     xor eax, eax
@@ -597,23 +616,21 @@ sky_render:
     jle .sb_ok
     mov eax, 255
 .sb_ok:
-    shl eax, 16
-    or r15d, eax                ; |= B << 16
+    or r15d, eax                    ; |= B (pas de décalage pour le B)
 
     ; --- SSE2 : remplir 800 pixels de cette ligne (4 pixels par store) ---
-    ; Broadcast r15d dans xmm0
     movd xmm0, r15d
-    pshufd xmm0, xmm0, 0       ; [color, color, color, color]
+    pshufd xmm0, xmm0, 0           ; broadcast : [color, color, color, color]
 
-    ; Calculer adresse de début de ligne
+    ; Adresse de début de ligne
     mov eax, r14d
     imul eax, SCREEN_W
-    lea rcx, [rdi + rax*4]     ; rcx = &backbuffer[y * 800]
+    lea rcx, [rdi + rax*4]
 
-    ; 800 pixels / 4 = 200 itérations SSE2
+    ; 800 pixels / 4 = 200 stores SSE2
     mov edx, 200
 .sky_fill:
-    movdqu [rcx], xmm0
+    movdqu [rcx], xmm0             ; stocker 4 pixels = 16 bytes
     add rcx, 16
     dec edx
     jnz .sky_fill
@@ -622,7 +639,9 @@ sky_render:
     jmp .sky_line
 
 .sky_done:
-    add rsp, 24                 ; libérer les 3 push delta
+    add rsp, 24                     ; libérer les 3 push delta (3*8=24)
+
+    add rsp, 40                     ; libérer le sub rsp initial (doit matcher sub rsp, 40)
     pop rdi
     pop rsi
     pop rbp
