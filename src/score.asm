@@ -9,13 +9,12 @@ global draw_number_at
 global draw_text_gameover
 global draw_text_restart
 global draw_game_over
-global sky_render            ; Dégradé de ciel SIMD avec smooth coloring
+global sky_render            
 
 extern player_y
 extern backbuffer
 extern camera_y
 
-; (wrap_smooth_log retiré : remplacé par formule linéaire directe dans sky_render)
 
 %define SCREEN_W 800
 %define SCREEN_H 600
@@ -46,8 +45,8 @@ letters_bitmap:
     db 0,1,0, 0,1,0, 0,1,0, 0,0,0, 0,1,0 ; ! (9)
 
 ; --- Constantes pour sky_render ---
-; Couleur de départ : 0x0087CEEB = Sky Blue Windows
-; En format GDI DIB (BGR32) : R=0x87=135, G=0xCE=206, B=0xEB=235
+
+
 sky_start_R dd 135          ; R de départ (0x87)
 sky_start_G dd 206          ; G de départ (0xCE)
 sky_start_B dd 235          ; B de départ (0xEB)
@@ -55,7 +54,7 @@ sky_start_B dd 235          ; B de départ (0xEB)
 ; Couleur d'arrivée : nuit profonde
 sky_end_R dd 0              ; R nuit
 sky_end_G dd 0              ; G nuit
-sky_end_B dd 50             ; B nuit (légère teinte bleue)
+sky_end_B dd 50             ; B nuit 
 
 section .bss
 global current_score
@@ -64,7 +63,7 @@ highest_y resd 1
 start_y   resd 1
 text_color resd 1
 
-; (sky_alt_smooth retiré : plus utilisé)
+
 
 section .text
 
@@ -363,7 +362,6 @@ draw_game_over:
 
     call draw_text_gameover
 
-    ; Score centré
     mov eax, [rel current_score]
     mov r10d, 1
     mov ebx, 10
@@ -395,10 +393,7 @@ draw_game_over:
     pop r12
     pop rbx
     ret
-
-; ============================================================
-; sky_render — Dégradé de ciel avec smooth coloring Mandelbrot
-; ============================================================
+; Dégradé de ciel avec smooth coloring Mandelbrot
 sky_render:
     push rbx
     push r12
@@ -408,196 +403,169 @@ sky_render:
     push rbp
     push rsi
     push rdi
-    sub rsp, 40                     ; shadow space (pas d'appel C ici, mais bonne pratique)
+    sub rsp, 40                    
 
     lea rdi, [rel backbuffer]
 
-    ; --- Altitude linéaire : ebp = clamp(abs(camera_y) / 60, 0, 255) ---
+    ; --- Altitude linéaire ---
     mov eax, [rel camera_y]
-    neg eax                         ; abs(camera_y)
+    neg eax                        
     cmp eax, 0
     jge .sky_pos
     xor eax, eax
 .sky_pos:
     xor edx, edx
-    mov ecx, 60                     ; diviseur : transition lente
-    div ecx                         ; eax = abs(camera_y) / 60
+    mov ecx, 60                     
+    div ecx                         
     cmp eax, 255
     jle .sky_alt_ok
     mov eax, 255
 .sky_alt_ok:
-    mov ebp, eax                    ; ebp = altitude [0,255]
+    mov ebp, eax
 
-    ; --- Calculer top_R = lerp(135, 0, ebp/255) ---
-    ; R top
-    mov eax, [rel sky_start_R]      ; eax = 135
-    mov ecx, 255
-    sub ecx, ebp                    ; ecx = 255 - alt_smooth
-    imul eax, ecx                   ; eax = 135 * (255 - alt)
-    xor edx, edx
-    mov ecx, 255
-    div ecx                         ; eax = top_R [0,135]
-    mov r12d, eax                   ; r12d = top_R
 
-    ; G top
-    mov eax, [rel sky_start_G]      ; eax = 206
+    mov eax, [rel sky_start_R]
     mov ecx, 255
     sub ecx, ebp
-    imul eax, ecx                   ; eax = 206 * (255 - alt)
+    imul eax, ecx
     xor edx, edx
     mov ecx, 255
-    div ecx                         ; eax = top_G [0,206]
-    mov r13d, eax                   ; r13d = top_G
+    div ecx                         
+    mov r12d, eax
 
-    ; B top = lerp(235, 50, alt/255) = 235 - (235-50)*alt/255 = 235 - 185*alt/255
-    mov eax, 185                    ; 235 - 50 = 185
-    imul eax, ebp                   ; eax = 185 * alt
+
+    mov eax, [rel sky_start_G]
+    mov ecx, 255
+    sub ecx, ebp
+    imul eax, ecx
     xor edx, edx
     mov ecx, 255
-    div ecx                         ; eax = delta_B
-    mov ecx, [rel sky_start_B]      ; ecx = 235
-    sub ecx, eax                    ; ecx = 235 - delta = top_B
-    cmp ecx, [rel sky_end_B]        ; ne pas descendre sous sky_end_B (50)
+    div ecx                         
+    mov r13d, eax
+
+  
+    mov eax, 185                   
+    imul eax, ebp
+    xor edx, edx
+    mov ecx, 255
+    div ecx                        
+    mov ecx, [rel sky_start_B]
+    sub ecx, eax
+    cmp ecx, [rel sky_end_B]       
     jge .b_ok
     mov ecx, 50
 .b_ok:
-    mov r14d, ecx                   ; r14d = top_B
+    mov r14d, ecx
 
-    ; --- Assembler top_color (0x00RRGGBB) ---
-    mov eax, r12d                   ; R
+    mov eax, r12d
     shl eax, 16
-    mov ecx, r13d                   ; G
+    mov ecx, r13d
     shl ecx, 8
     or eax, ecx
-    or eax, r14d                    ; B
-    mov r12d, eax                   ; r12d = top_color RGB32
+    or eax, r14d
+    mov r12d, eax
 
-    ; --- Calculer bottom_color = top + (20, 15, 10) clampé ---
-    ; R_bot = clamp(top_R + 20, 0, 255)
+
     mov eax, r12d
     shr eax, 16
-    and eax, 0xFF                   ; extraire R de top_color
+    and eax, 0xFF
     add eax, 20
     cmp eax, 255
     jle .rb_ok
     mov eax, 255
 .rb_ok:
-    mov r13d, eax                   ; R_bot
+    mov r13d, eax
 
-    ; G_bot = clamp(top_G + 15, 0, 255)
     mov eax, r12d
     shr eax, 8
-    and eax, 0xFF                   ; extraire G de top_color
+    and eax, 0xFF
     add eax, 15
     cmp eax, 255
     jle .gb_ok
     mov eax, 255
 .gb_ok:
-    mov r14d, eax                   ; G_bot
+    mov r14d, eax
 
-    ; B_bot = clamp(top_B + 10, 0, 255)
+
     mov eax, r12d
-    and eax, 0xFF                   ; extraire B de top_color
+    and eax, 0xFF
     add eax, 10
     cmp eax, 255
     jle .bb_ok
     mov eax, 255
 .bb_ok:
-    mov r15d, eax                   ; B_bot
+    mov r15d, eax
 
-    ; Assembler bottom_color 0x00RRGGBB
-    mov eax, r13d                   ; R_bot
+ 
+    mov eax, r13d
     shl eax, 16
-    mov ecx, r14d                   ; G_bot
+    mov ecx, r14d
     shl ecx, 8
     or eax, ecx
-    or eax, r15d                    ; B_bot
-    mov r13d, eax                   ; r13d = bottom_color
+    or eax, r15d
+    mov r13d, eax
 
-    ; --- Extraire composantes R,G,B de top et bottom pour interpolation ---
-    ; top_R = (r12d>>16) & 0xFF → rbp
+ 
     mov eax, r12d
     shr eax, 16
     and eax, 0xFF
-    mov ebp, eax                    ; rbp = top_R
+    mov ebp, eax
 
-    ; top_G = (r12d>>8) & 0xFF → rsi
     mov eax, r12d
     shr eax, 8
     and eax, 0xFF
-    mov esi, eax                    ; esi = top_G
+    mov esi, eax
 
-    ; top_B = r12d & 0xFF → rbx
     mov eax, r12d
     and eax, 0xFF
-    mov ebx, eax                    ; ebx = top_B
+    mov ebx, eax
 
-    ; ============================================================
-    ; Optimisation sky_render : accumulation incrémentale + AVX2 fill
-    ;
-    ; AVANT : 3 × idiv (600) par ligne × 600 lignes = 1800 idiv/frame
-    ;         200 movdqu SSE2 par ligne (4 pixels)
-    ;
-    ; APRÈS : 3 idiv UNE SEULE FOIS (calcul du pas), puis additions
-    ;         100 vmovdqu AVX2 par ligne (8 pixels) → ×2 sur le fill
-    ;
-    ; Gain total estimé : ×8-15 sur sky_render
-    ; ============================================================
+    ; step en virgule fixe 8.8 : (bot - top) * 256 / SCREEN_H
+    ; accumule chaque ligne,  8 pour lire la valeur entiere
 
-    ; --- Pré-calculer step_R, step_G, step_B (3 idiv, faits UNE SEULE FOIS) ---
-    ; step = (bot - top) * 256 / SCREEN_H  (point fixe 8.8)
-    ; Chaque ligne ajoute le step à l'accumulateur.
-    ; Résultat par ligne : top + (acc >> 8)
-
-    ; step_R
     mov eax, r13d
     shr eax, 16
-    and eax, 0xFF                   ; bot_R
-    sub eax, ebp                    ; delta_R = bot_R - top_R
-    shl eax, 8                      ; delta_R << 8
+    and eax, 0xFF
+    sub eax, ebp
+    shl eax, 8
     cdq
     mov ecx, SCREEN_H
-    idiv ecx                        ; step_R (8.8 fixe)
-    push rax                        ; [rsp+24] = step_R
+    idiv ecx
+    push rax                       
 
-    ; step_G
     mov eax, r13d
     shr eax, 8
-    and eax, 0xFF                   ; bot_G
-    sub eax, esi                    ; delta_G
+    and eax, 0xFF
+    sub eax, esi
     shl eax, 8
     cdq
     mov ecx, SCREEN_H
-    idiv ecx                        ; step_G
-    push rax                        ; [rsp+16] = step_G
-
-    ; step_B
+    idiv ecx
+    push rax                       
     mov eax, r13d
-    and eax, 0xFF                   ; bot_B
-    sub eax, ebx                    ; delta_B
+    and eax, 0xFF
+    sub eax, ebx
     shl eax, 8
     cdq
     mov ecx, SCREEN_H
-    idiv ecx                        ; step_B
-    push rax                        ; [rsp+8] = step_B
+    idiv ecx
+    push rax                       
 
-    ; acc_B sur le stack (mutable chaque ligne), acc_R et acc_G dans r12d/r13d
     xor eax, eax
-    push rax                        ; [rsp+0] = acc_B = 0
-    xor r12d, r12d                  ; acc_R = 0  (r12d libéré après extraction)
-    xor r13d, r13d                  ; acc_G = 0  (r13d libéré après extraction)
+    push rax                        
+    xor r12d, r12d                  
+    xor r13d, r13d                 
 
-    ; --- Boucle sur 600 lignes ---
-    xor r14d, r14d                  ; r14d = ligne courante (0..599)
+    
+    xor r14d, r14d
 
 .sky_line:
     cmp r14d, SCREEN_H
     jge .sky_done
 
-    ; R(y) = top_R + (acc_R >> 8)
     mov eax, r12d
     sar eax, 8
-    add eax, ebp                    ; + top_R (ebp)
+    add eax, ebp
     cmp eax, 0
     jge .sr_pos
     xor eax, eax
@@ -609,10 +577,9 @@ sky_render:
     shl eax, 16
     mov r15d, eax
 
-    ; G(y) = top_G + (acc_G >> 8)
     mov eax, r13d
     sar eax, 8
-    add eax, esi                    ; + top_G (esi)
+    add eax, esi
     cmp eax, 0
     jge .sg_pos
     xor eax, eax
@@ -624,10 +591,9 @@ sky_render:
     shl eax, 8
     or r15d, eax
 
-    ; B(y) = top_B + (acc_B >> 8)
-    mov eax, dword [rsp]            ; acc_B
+    mov eax, dword [rsp]
     sar eax, 8
-    add eax, ebx                    ; + top_B (ebx)
+    add eax, ebx
     cmp eax, 0
     jge .sb_pos
     xor eax, eax
@@ -638,24 +604,23 @@ sky_render:
 .sb_ok:
     or r15d, eax
 
-    ; --- Incrémenter les accumulateurs (additions, pas de divisions) ---
-    mov ecx, dword [rsp+24]         ; step_R
+    ; incrementer les accumulateurs
+    mov ecx, dword [rsp+24]
     add r12d, ecx
-    mov ecx, dword [rsp+16]         ; step_G
+    mov ecx, dword [rsp+16]
     add r13d, ecx
-    mov ecx, dword [rsp+8]          ; step_B
-    add dword [rsp], ecx            ; acc_B += step_B
+    mov ecx, dword [rsp+8]
+    add dword [rsp], ecx
 
-    ; --- AVX2 : remplir 800 pixels (8 pixels par store = 100 stores) ---
-    ; Gain ×2 vs SSE2 (200 movdqu → 100 vmovdqu)
+    ; AVX2 : 100 stores de 8 pixels pour remplir 800px
     movd xmm0, r15d
-    vpbroadcastd ymm0, xmm0        ; 8 pixels broadcast 256-bit
+    vpbroadcastd ymm0, xmm0
 
     mov eax, r14d
     imul eax, SCREEN_W
     lea rcx, [rdi + rax*4]
 
-    mov edx, 100                    ; 800 / 8 = 100 stores AVX2
+    mov edx, 100                    
 .sky_fill:
     vmovdqu [rcx], ymm0
     add rcx, 32
@@ -666,7 +631,7 @@ sky_render:
     jmp .sky_line
 
 .sky_done:
-    vzeroupper                      ; nettoyer état YMM (compatibilité SSE)
+    vzeroupper                     
     add rsp, 32                     ; libérer 4 push × 8 = 32 bytes
 
     add rsp, 40                     ; libérer le sub rsp initial (doit matcher sub rsp, 40)

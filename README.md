@@ -392,7 +392,7 @@ mov ecx, dword [rsp+24]  ; step_R (constant)
 add r12d, ecx            ; acc_R += step_R
 ```
 
-**8.8 fixed-point principle:** `step_R = (delta * 256) / 600` is a number with 8 bits of fractional part. By accumulating this step each row and right-shifting by 8 to read the integer value, we get accurate interpolation with no division inside the loop. A game engine would compute this automatically via a shader interpolation unit. Here the math is explicit and hand-tuned.
+**8.8 fixed-point principle:** `step_R = (delta * 256) / 600` is a number with 8 bits of fractional part. By accumulating this step each row and right-shifting by 8 to read the integer value, we get accurate interpolation with no division inside the loop. A game engine would compute this automatically via a shader interpolation unit. Here the math is explicit.
 
 ### AVX2 fill - 8 pixels per instruction
 
@@ -412,7 +412,7 @@ vzeroupper                ; MANDATORY after AVX2 (clears upper YMM lanes)
 
 **Total sky_render speedup: x8-15.**
 
-`vzeroupper` deserves an explanation: when a YMM register is written, its state pollutes the mapping with XMM registers. If you then call an SSE2 function without `vzeroupper`, the CPU inserts transition micro-ops that cost dozens of cycles. `vzeroupper` zeroes the upper 128 bits of all YMM registers in a single instruction. A compiler using intrinsics inserts this automatically. In hand-written assembly you place it yourself after every AVX2 block.
+`vzeroupper` deserves an explanation: when a YMM register is written, its state pollutes the mapping with XMM registers. If you then call an SSE2 function without `vzeroupper`, the CPU inserts transition micro-ops that cost dozens of cycles. `vzeroupper` zeroes the upper 128 bits of all YMM registers in a single instruction. A compiler using intrinsics inserts this automatically.
 
 ---
 
@@ -1187,7 +1187,7 @@ build.bat
 
 Several x86-64 assemblers exist. The choice matters more than it might seem.
 
-**MASM** (Microsoft Macro Assembler) is the assembler that ships with Visual Studio. It uses Intel syntax and integrates cleanly with the MSVC toolchain, but its macro system and directive style push you toward high-level abstractions that paper over what the CPU actually does. Expressions like `PROC` and `ENDP`, `LOCAL`, `INVOKE` generate code you did not explicitly write. The goal here was the opposite: every instruction in the binary was typed by hand.
+**MASM** (Microsoft Macro Assembler) is the assembler that ships with Visual Studio. It uses Intel syntax and integrates cleanly with the MSVC toolchain, but its macro system and directive style push you toward high-level abstractions that paper over what the CPU actually does. Expressions like `PROC` and `ENDP`, `LOCAL`, `INVOKE` generate code you did not explicitly write. The goal here was the opposite.
 
 **GAS** (GNU Assembler, part of binutils) uses AT&T syntax by default: `movl %eax, %ebx` instead of `mov ebx, eax`. Source and destination are swapped compared to Intel documentation, register names carry type suffixes, and immediate values are prefixed with `$`. Readable for people coming from GCC output, uncomfortable for anyone reading Intel manuals directly.
 

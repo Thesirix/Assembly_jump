@@ -13,16 +13,13 @@ extern scroll_init
 extern scroll_update
 extern score_init
 extern score_update
-
-; --- IMPORT AUDIO (via thread ring buffer) ---
 extern audio_post_cmd
-%define CMD_PLAY_JUMP    1
-%define CMD_UPDATE_MUSIC 2
-%define CMD_STOP_MUSIC   3
-
 extern player_y
 extern player_x
 extern game_over
+
+%define CMD_UPDATE_MUSIC 2
+%define CMD_STOP_MUSIC   3
 
 section .text
 
@@ -30,19 +27,15 @@ game_init:
     push rbx
     sub rsp, 32
 
-    ; Remise à zéro totale
     mov dword [rel player_x], 380
     mov dword [rel player_y], 500
-    
     call physics_init
     call scroll_init
     call platforms_init
     call score_init
-    
-    ; RESET MUSIQUE (Silence + Rembobinage au début)
     mov ecx, CMD_STOP_MUSIC
     call audio_post_cmd
-    
+
     add rsp, 32
     pop rbx
     ret
@@ -53,27 +46,22 @@ game_update:
 
     call input_update
     call physics_update
-    
-    ; --- VERIFICATION MORT ---
-    ; Si physics dit "Game Over", on coupe le son et on quitte l'update
+
     mov eax, [rel game_over]
     cmp eax, 1
     je .stop_sound
-    
+
     call platforms_update
     call scroll_update
     call score_update
-    
-    ; --- MUSIQUE (Jeu en cours) ---
     mov ecx, CMD_UPDATE_MUSIC
     call audio_post_cmd
-    
+
     add rsp, 32
     pop rbx
     ret
 
 .stop_sound:
-    ; Le jeu vient de finir, on coupe la note coincée
     mov ecx, CMD_STOP_MUSIC
     call audio_post_cmd
     add rsp, 32

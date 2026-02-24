@@ -10,7 +10,7 @@ global highest_platform_y
 global highest_platform_x
 global rand_seed
 
-; Données particules exportées → utilisées par particles.asm
+
 global part_x
 global part_y
 global part_vx
@@ -26,15 +26,12 @@ extern vel_y
 extern camera_y
 extern current_score
 
-; Import du son (via thread ring buffer)
 extern audio_post_cmd
 %define CMD_PLAY_JUMP 1
 
-; Import du platform pool (thread.asm)
 extern platpool_consume
 extern platpool_request
 
-; Import du bridge C (helper.asm -> helper.c)
 extern wrap_perlin2d
 extern wrap_plat_freq
 extern wrap_sin
@@ -46,81 +43,53 @@ extern wrap_sin
 %define PLATFORM_W      80
 %define PLATFORM_H      12
 %define MAX_PLATFORMS   32
-%define MAX_PARTICLES   512         ; AUGMENTÉ : 32*16 = 512 slots particules
+%define MAX_PARTICLES   512
 
-; ============================================================
 section .data
-; ============================================================
+
 rand_seed dd 12345
+bounce_vel dq -12.0
 
-; vel_y est maintenant double64 (resq dans physics.asm)
-; bounce_vel doit aussi être double64 pour la cohérence
-bounce_vel dq -12.0             ; double64 — même taille que vel_y
-
-; Table de permutation Perlin 1D (256 entrées, Fisher-Yates)
 perlin_perm:
     times 256 db 0
 
-; --- Constantes FPU oscillation plateformes mobiles ---
-fpu_base_freq   dd 0.008        ; Fréquence de base (ralentie)
-fpu_desync      dd 0.7          ; Décalage de phase par index (désynchronisation)
-fpu_40          dd 40.0         ; Amplitude en pixels
+fpu_base_freq   dd 0.008
+fpu_desync      dd 0.7          ; decalage de phase par index
+fpu_40          dd 40.0
 
-; Compteur animation plateformes mobiles
 anim_tick dd 0
 
-; --- Marges pour arrondir les bords des plateformes (PLATFORM_H = 12) ---
-; Coupe 4 pixels au sommet, puis 2, puis 1, puis droit, et pareil en bas.
+
 plat_margins db 4, 2, 1, 0, 0, 0, 0, 0, 0, 1, 2, 4
 
-; ============================================================
 section .bss
-; ============================================================
+
 platforms_x      resd MAX_PLATFORMS
 platforms_y      resd MAX_PLATFORMS
 platforms_active resb MAX_PLATFORMS
-
-; Plateformes mobiles (flag, 20% aléatoire)
 platforms_mobile resb MAX_PLATFORMS
 platforms_base_x resd MAX_PLATFORMS
-
-; Timer de flash visuel (cosmétique seulement)
 platforms_hit_timer resb MAX_PLATFORMS
-
 highest_platform_y resd 1
 highest_platform_x resd 1
-
-; Couleur HSV des plateformes (BGR32)
 platform_color resd 1
 
-; --- Particules de désintégration (MAX_PARTICLES = 512) ---
 part_x      resd MAX_PARTICLES
 part_y      resd MAX_PARTICLES
 part_vx     resd MAX_PARTICLES
 part_vy     resd MAX_PARTICLES
 part_life   resb MAX_PARTICLES
 part_color  resd MAX_PARTICLES
-
-; Compteur de gravité douce des particules (1 incrément tous les 3 frames)
 part_grav_tick resd 1
 
-; Temporaire SSE2 (cvttsd2si → offset entier)
-fpu_temp resd 1
-
-; Temporaire pour le bridge wrap_plat_freq (double retourné dans xmm0)
+fpu_temp     resd 1
 fpu_freq_tmp resq 1
-
-; Temporaire pour sauvegarder l'index particule entre les appels random
 emit_save_idx resd 1
 
-; ============================================================
 section .text
-; ============================================================
 
-; ============================================================
-; random — LCG (Linear Congruential Generator)
-; Retourne : eax = 0..32767
-; ============================================================
+
+; random - LCG (Linear Congruential Generator)
 random:
     push rbx
     mov eax, [rel rand_seed]
@@ -133,17 +102,13 @@ random:
     pop rbx
     ret
 
-; ============================================================
-; perlin_init — Initialise la table de permutation 1D
-; Algorithme Fisher-Yates depuis rdtsc (aléatoire à chaque démarrage)
-; 2 pushes + sub 40 = 56. 56 mod 16 = 8. OK
-; ============================================================
+
 perlin_init:
     push rbx
     push r12
     sub rsp, 40
 
-    ; Remplir 0..255
+
     lea rbx, [rel perlin_perm]
     xor ecx, ecx
 .fill:
@@ -152,7 +117,7 @@ perlin_init:
     cmp ecx, 256
     jl .fill
 
-    ; Mélange Fisher-Yates
+
     mov r12d, 255
 .shuffle:
     cmp r12d, 0
@@ -175,11 +140,7 @@ perlin_init:
     pop rbx
     ret
 
-; ============================================================
-; noise1d — Bruit de Perlin 1D entier (table perlin_perm)
-; Entrée : ecx = coordonnée
-; Sortie : eax = [-128, +127]
-; ============================================================
+
 noise1d:
     push rbx
     push r12
@@ -187,7 +148,7 @@ noise1d:
 
     mov eax, ecx
     mov r12d, eax
-    and r12d, 0xFF              ; partie fractionnaire (0..255)
+    and r12d, 0xFF             
 
     sar eax, 8
     and eax, 0xFF
@@ -196,29 +157,25 @@ noise1d:
     lea r13, [rel perlin_perm]
     movzx eax, byte [r13 + rbx]
     sub eax, 128
-    mov ecx, eax               ; grad0
+    mov ecx, eax               
 
     inc ebx
     and ebx, 0xFF
     movzx eax, byte [r13 + rbx]
-    sub eax, 128               ; grad1
+    sub eax, 128               
 
     ; Interpolation linéaire entière
     sub eax, ecx
     imul eax, r12d
     sar eax, 8
-    add eax, ecx               ; résultat = grad0 + frac*(grad1-grad0)
+    add eax, ecx               
 
     pop r13
     pop r12
     pop rbx
     ret
 
-; ============================================================
-; hsv_to_rgb — Conversion HSV -> RGB entier pur
-; Entrée : ecx=hue(0..359), edx=sat(0..255), r8d=val(0..255)
-; Retour  : eax = 0x00BBGGRR
-; ============================================================
+; hsv_to_rgb - Conversion HSV -> RGB entier pur
 hsv_to_rgb:
     push rbx
     push r12
@@ -352,10 +309,7 @@ hsv_to_rgb:
     pop rbx
     ret
 
-; ============================================================
-; platforms_init
-; 3 pushes + sub 32 = 56. 56 mod 16 = 8. OK
-; ============================================================
+
 platforms_init:
     push rbx
     push r12
@@ -436,10 +390,7 @@ platforms_init:
     pop rbx
     ret
 
-; ============================================================
-; platforms_update
-; 0 pushes + sub 40 = 40. 40 mod 16 = 8. OK
-; ============================================================
+
 platforms_update:
     sub rsp, 40
 
@@ -455,10 +406,7 @@ platforms_update:
     add rsp, 40
     ret
 
-; ============================================================
-; update_platform_color — HSV depuis camera_y
-; 1 push + sub 32 = 40. 40 mod 16 = 8. OK
-; ============================================================
+
 update_platform_color:
     push rbx
     sub rsp, 32
@@ -476,9 +424,9 @@ update_platform_color:
     mov ecx, 360
     div ecx
 
-    mov ecx, edx               ; hue = (camera_y/50) mod 360
-    mov edx, 200               ; saturation
-    mov r8d, 220               ; valeur
+    mov ecx, edx               
+    mov edx, 200              
+    mov r8d, 220              
     call hsv_to_rgb
     mov [rel platform_color], eax
 
@@ -486,9 +434,7 @@ update_platform_color:
     pop rbx
     ret
 
-; ============================================================
-; platforms_hit_timer_update — Décrémenter timers flash visuel
-; ============================================================
+
 platforms_hit_timer_update:
     push rbx
     push r12
@@ -508,9 +454,7 @@ platforms_hit_timer_update:
     pop rbx
     ret
 
-; ============================================================
-; platforms_update_mobile — Oscillation SSE2 + sin via bridge C
-; ============================================================
+; platforms_update_mobile - Oscillation SSE2 + sin via bridge C
 platforms_update_mobile:
     push rbx
     push r12
@@ -522,7 +466,7 @@ platforms_update_mobile:
     cmp r12d, MAX_PLATFORMS
     jge .done
 
-    ; Vérifier si cette plateforme est mobile et active
+
     lea rbx, [rel platforms_mobile]
     cmp byte [rbx + r12], 0
     je .next
@@ -531,44 +475,34 @@ platforms_update_mobile:
     cmp byte [rbx + r12], 0
     je .next
 
-    ; --- Obtenir la fréquence propre via bridge C ---
-    ; wrap_plat_freq(index) -> xmm0 (double)
+
     mov ecx, r12d
-    call wrap_plat_freq             ; xmm0 = fréquence de cette plateforme
-    ; Sauvegarder la fréquence en mémoire (double64 → fpu_freq_tmp)
+    call wrap_plat_freq
     movsd [rel fpu_freq_tmp], xmm0
 
-    ; --- SSE2 : angle = anim_tick * freq + index * 0.7 ---
-    ; Partie 1 : anim_tick * freq (freq = double64 dans fpu_freq_tmp)
     mov eax, [rel anim_tick]
-    cvtsi2sd xmm0, eax                  ; xmm0 = (double)anim_tick
-    mulsd xmm0, [rel fpu_freq_tmp]      ; xmm0 = anim_tick * freq
+    cvtsi2sd xmm0, eax
+    mulsd xmm0, [rel fpu_freq_tmp]
 
-    ; Partie 2 : index * 0.7 (désynchronisation par plateforme)
-    cvtsi2sd xmm1, r12d                 ; xmm1 = (double)index
-    movss xmm2, [rel fpu_desync]        ; xmm2[31:0] = 0.7 (float32)
-    cvtss2sd xmm2, xmm2                 ; xmm2 = 0.7 (double64)
-    mulsd xmm1, xmm2                    ; xmm1 = index * 0.7
-    addsd xmm0, xmm1                    ; xmm0 = angle = tick*freq + index*0.7
+    cvtsi2sd xmm1, r12d
+    movss xmm2, [rel fpu_desync]
+    cvtss2sd xmm2, xmm2
+    mulsd xmm1, xmm2
+    addsd xmm0, xmm1
 
-    ; sin(angle) via bridge C (remplace fsin x87)
-    call wrap_sin                       ; xmm0 = sin(angle) dans [-1.0, +1.0]
+    call wrap_sin
 
-    ; Multiplier par amplitude (40 pixels)
-    movss xmm1, [rel fpu_40]            ; xmm1[31:0] = 40.0 (float32)
-    cvtss2sd xmm1, xmm1                 ; xmm1 = 40.0 (double64)
-    mulsd xmm0, xmm1                    ; xmm0 = sin(angle) * 40
+    movss xmm1, [rel fpu_40]
+    cvtss2sd xmm1, xmm1
+    mulsd xmm0, xmm1
 
-    ; Convertir en entier par troncature (remplace fistp)
-    cvttsd2si eax, xmm0                 ; eax = (int)(sin(angle)*40)
-    mov [rel fpu_temp], eax             ; fpu_temp = offset pixels
-
-    ; Appliquer l'offset à la position de base
+    cvttsd2si eax, xmm0
+    mov [rel fpu_temp], eax
     lea rbx, [rel platforms_base_x]
     mov eax, [rbx + r12*4]
     add eax, [rel fpu_temp]
 
-    ; Clamp [30, 690] (bords visibles, plateforme jamais collée aux murs)
+    ; Clamp  (bords visibles, plateforme jamais collée aux murs)
     cmp eax, 30
     jge .clamp_max
     mov eax, 30
@@ -590,9 +524,7 @@ platforms_update_mobile:
     pop rbx
     ret
 
-; ============================================================
-; platforms_cleanup_old — Supprimer les plateformes sorties du bas
-; ============================================================
+; Supprimer les plateformes sorties du bas
 platforms_cleanup_old:
     push rbx
     push r12
@@ -624,9 +556,7 @@ platforms_cleanup_old:
     pop rbx
     ret
 
-; ============================================================
-; platforms_generate_new — Créer une plateforme si nécessaire
-; ============================================================
+; Créer une plateforme si nécessaire
 platforms_generate_new:
     push rbx
     push r12
@@ -674,9 +604,9 @@ platforms_generate_new:
     call random
     xor edx, edx
     mov ecx, 5
-    div ecx                     ; edx = random % 5
+    div ecx
     lea rbx, [rel platforms_mobile]
-    cmp edx, 0                  ; 1 chance sur 5 = 20%
+    cmp edx, 0                 
     jne .not_mobile_pool
     mov byte [rbx + r12], 1
     jmp .pool_done
@@ -699,9 +629,7 @@ platforms_generate_new:
     pop rbx
     ret
 
-; ============================================================
-; create_one_platform — LCG + biais Perlin 2D (via bridge C)
-; ============================================================
+;LCG + biais Perlin 2D (via bridge C)
 create_one_platform:
     push r14
     push r15
@@ -711,26 +639,26 @@ create_one_platform:
     call random
     xor edx, edx
     mov ecx, 400
-    div ecx                     ; edx = random % 400
-    sub edx, 200               ; offset dans [-200, +199]
+    div ecx
+    sub edx, 200            
     add edx, [rel highest_platform_x]
 
-    ; --- Biais Perlin 2D via bridge C (wrap_perlin2d) ---
-    mov dword [rsp+32], edx     ; sauvegarder X LCG brut (espace local, pas push)
+ 
+    mov dword [rsp+32], edx    
 
     mov ecx, [rel highest_platform_y]
-    sar ecx, 7                  ; / 128 → coordonnée Perlin Y
+    sar ecx, 7                 
     mov edx, [rel highest_platform_x]
-    sar edx, 7                  ; / 128 → coordonnée Perlin X
-    call wrap_perlin2d          ; eax = bruit Perlin 2D double précision
+    sar edx, 7                  
+    call wrap_perlin2d
 
     ; Réduire le biais à 25%
-    sar eax, 2                  ; eax = biais Perlin 2D réduit [-32, +32]
+    sar eax, 2
 
     mov edx, dword [rsp+32]     ; récupérer X LCG (depuis espace local)
     add edx, eax               ; X final = LCG + petit biais Perlin 2D
 
-    ; Clamp X à [0, 720]
+
     cmp edx, 0
     jge .check_max
     mov edx, 0
@@ -753,17 +681,17 @@ create_one_platform:
     jl .easy
     cmp eax, 5000
     jl .medium
-    ; score >= 5000 : gap 55..100
+    
     mov r14d, 55
     mov r15d, 45
     jmp .gen_gap
 .easy:
-    ; score < 1000 : gap 30..60
+   
     mov r14d, 30
     mov r15d, 30
     jmp .gen_gap
 .medium:
-    ; score 1000..5000 : gap 40..80
+ 
     mov r14d, 40
     mov r15d, 40
 
@@ -785,15 +713,15 @@ create_one_platform:
     mov [rbx + r12*4], eax
     mov [rel highest_platform_y], eax
 
-    ; Activer
+
     lea rbx, [rel platforms_active]
     mov byte [rbx + r12], 1
 
-    ; --- MOBILE : 20% aléatoire ---
+ 
     call random
     xor edx, edx
     mov ecx, 5
-    div ecx                     ; edx = random % 5
+    div ecx
     lea rbx, [rel platforms_mobile]
     cmp edx, 0
     jne .not_mobile
@@ -810,9 +738,7 @@ create_one_platform:
     pop r14
     ret
 
-; ============================================================
-; SSE2 SIMD collision — 4 plateformes par itération
-; ============================================================
+; SSE2 SIMD collision - 4 plateformes par itération
 platforms_check_collision:
     push rbx
     push r12
@@ -822,11 +748,11 @@ platforms_check_collision:
     push rbp
     sub rsp, 40
 
-    ; vel_y est un double IEEE 754 64-bit : bit 63 = signe
-    mov rax, [rel vel_y]            ; charger double64 en entier
+    ; collision seulement si le joueur descend (vel_y > 0)
+    mov rax, [rel vel_y]
     test rax, rax
-    js .col_done                    ; bit 63 = 1 → négatif → monte
-    jz .col_done                    ; zéro → pas de mouvement
+    js .col_done
+    jz .col_done
 
     lea r14, [rel platforms_x]
     lea r15, [rel platforms_y]
@@ -837,29 +763,29 @@ platforms_check_collision:
     mov ebp, r9d
     add ebp, PLAYER_H
 
-    ; Préparer les registres SIMD SSE2 pour la détection 4-wide
+    ; broadcast des valeurs joueur dans les registres SSE2 (4-wide)
     mov eax, r8d
     add eax, PLAYER_W
     movd xmm1, eax
-    pshufd xmm1, xmm1, 0           ; xmm1 = [player_x+W, ...]
+    pshufd xmm1, xmm1, 0
 
     movd xmm2, r8d
-    pshufd xmm2, xmm2, 0           ; xmm2 = [player_x, ...]
+    pshufd xmm2, xmm2, 0
 
     movd xmm3, ebp
-    pshufd xmm3, xmm3, 0           ; xmm3 = [player_bottom, ...]
+    pshufd xmm3, xmm3, 0
 
     mov eax, [rel camera_y]
     movd xmm5, eax
-    pshufd xmm5, xmm5, 0           ; xmm5 = [camera_y, ...]
+    pshufd xmm5, xmm5, 0
 
     mov eax, PLATFORM_W
     movd xmm6, eax
-    pshufd xmm6, xmm6, 0           ; xmm6 = [PLATFORM_W, ...]
+    pshufd xmm6, xmm6, 0
 
     mov eax, 16
     movd xmm7, eax
-    pshufd xmm7, xmm7, 0           ; xmm7 = [16, ...]
+    pshufd xmm7, xmm7, 0
 
     xor r12d, r12d
 
@@ -867,38 +793,34 @@ platforms_check_collision:
     cmp r12d, MAX_PLATFORMS
     jge .col_done
 
-    ; Charger 4 X et 4 Y de plateformes simultanément (SSE2 4-wide)
-    movdqu xmm8, [r14 + r12*4]     ; xmm8 = [x0, x1, x2, x3]
-    movdqu xmm9, [r15 + r12*4]     ; xmm9 = [y0, y1, y2, y3]
-    psubd xmm9, xmm5               ; xmm9 = [y-cam, ...] = screen Y
+    movdqu xmm8, [r14 + r12*4]
+    movdqu xmm9, [r15 + r12*4]
+    psubd xmm9, xmm5               ; screen_y = world_y - camera_y
 
-    ; Test X overlap : player_x+W > plat_x
+    ; AABB 4-wide : 4 conditions en parallele
     movdqa xmm10, xmm1
-    pcmpgtd xmm10, xmm8            ; xmm10 = mask (player_x+W > plat_x)
+    pcmpgtd xmm10, xmm8
 
-    ; Test X overlap : plat_x+W > player_x
     movdqa xmm11, xmm8
     paddd xmm11, xmm6
-    pcmpgtd xmm11, xmm2            ; xmm11 = mask (plat_x+W > player_x)
+    pcmpgtd xmm11, xmm2
 
-    ; Test Y overlap haut : player_bottom+1 > plat_y
     movdqa xmm12, xmm3
     mov eax, 1
     movd xmm0, eax
     pshufd xmm0, xmm0, 0
     paddd xmm12, xmm0
-    pcmpgtd xmm12, xmm9            ; xmm12 = mask
+    pcmpgtd xmm12, xmm9
 
-    ; Test Y overlap bas : plat_y+16+1 > player_bottom
     movdqa xmm0, xmm9
     paddd xmm0, xmm7
     mov eax, 1
     movd xmm4, eax
     pshufd xmm4, xmm4, 0
     paddd xmm0, xmm4
-    pcmpgtd xmm0, xmm3             ; xmm0 = mask
+    pcmpgtd xmm0, xmm3
 
-    ; AND de tous les masques → collision si tous vrais
+    ; collision si les 4 masques sont vrais
     pand xmm10, xmm11
     pand xmm10, xmm12
     pand xmm10, xmm0
@@ -945,15 +867,15 @@ platforms_check_collision:
     je .simd_next
 
 .collision_hit:
-    ; Rebond : vel_y = -12.0 (double64)
-    mov rax, [rel bounce_vel]       ; charger double64 -12.0
-    mov [rel vel_y], rax            ; stocker double64
+  
+    mov rax, [rel bounce_vel]       
+    mov [rel vel_y], rax          
 
     ; Son de saut
     mov ecx, CMD_PLAY_JUMP
     call audio_post_cmd
 
-    ; --- NOUVEAU : Désactiver la plateforme instantanément ---
+  
     mov byte [r13 + rbx], 0         ; La plateforme est détruite et disparait visuellement
 
     ; Émettre 16 particules à l'endroit exact où était la plateforme
@@ -975,9 +897,7 @@ platforms_check_collision:
     pop rbx
     ret
 
-; ============================================================
 ; emit_particles — Émettre 16 particules depuis la plateforme
-; ============================================================
 emit_particles:
     push r12
     push r13
@@ -985,19 +905,19 @@ emit_particles:
     push r15
     sub rsp, 48
 
-    ; Position de la plateforme (en coordonnées écran)
+ 
     lea rax, [rel platforms_x]
-    mov r13d, [rax + rbx*4]     ; r13d = plat_x
+    mov r13d, [rax + rbx*4]
     lea rax, [rel platforms_y]
-    mov r14d, [rax + rbx*4]     ; r14d = plat_y monde
+    mov r14d, [rax + rbx*4]
     mov eax, [rel camera_y]
-    sub r14d, eax               ; r14d = plat_y écran
+    sub r14d, eax
 
-    ; Couleur avec éclat initial (OR +0x30 sur chaque composante BGR)
+    ; Couleur avec éclat initial 
     mov r15d, [rel platform_color]
     mov eax, r15d
-    or eax, 0x00303030          ; éclat blanc partiel au départ
-    ; Clamp chaque composante à 255
+    or eax, 0x00303030         
+ 
     ; R
     mov edx, eax
     and edx, 0xFF
@@ -1021,16 +941,16 @@ emit_particles:
     jle .b_eclat_ok
     or eax, 0x00FF0000
 .b_eclat_ok:
-    mov r15d, eax               ; couleur avec éclat
+    mov r15d, eax              
 
-    ; Chercher 16 slots libres
-    xor r12d, r12d              ; compteur émissions (max 16)
-    xor ecx, ecx               ; index particule (0..MAX_PARTICLES-1)
+
+    xor r12d, r12d          
+    xor ecx, ecx               
 
 .find_part:
     cmp ecx, MAX_PARTICLES
     jge .emit_done
-    cmp r12d, 16                ; CORRIGÉ : 16 particules (vs 8)
+    cmp r12d, 16              
     jge .emit_done
 
     lea rax, [rel part_life]
@@ -1057,9 +977,9 @@ emit_particles:
     mov [rel emit_save_idx], ecx
     call random
     xor edx, edx
-    mov ecx, 11                 ; 11 valeurs : 0..10
+    mov ecx, 11                
     div ecx
-    sub edx, 5                 ; shift vers [-5, +5]
+    sub edx, 5               
     mov ecx, [rel emit_save_idx]
     lea rax, [rel part_vx]
     mov [rax + rcx*4], edx
@@ -1068,18 +988,18 @@ emit_particles:
     mov [rel emit_save_idx], ecx
     call random
     xor edx, edx
-    mov ecx, 7                  ; 7 valeurs : 0..6
+    mov ecx, 7                 
     div ecx
-    sub edx, 8                 ; shift vers [-8, -2]
+    sub edx, 8               
     mov ecx, [rel emit_save_idx]
     lea rax, [rel part_vy]
     mov [rax + rcx*4], edx
 
-    ; life = 60
+  
     lea rax, [rel part_life]
     mov byte [rax + rcx], 60
 
-    ; Couleur avec éclat
+
     lea rax, [rel part_color]
     mov [rax + rcx*4], r15d
 
@@ -1097,12 +1017,7 @@ emit_particles:
     pop r12
     ret
 
-; particles_update et particles_render → déplacés dans particles.asm
-; (refactoring + optimisations SIMD : 4 particules/iter, 0 div)
-
-; ============================================================
-; platforms_render — Rendu avec couleur HSV, forme arrondie
-; ============================================================
+;Rendu avec couleur HSV, forme arrondie
 platforms_render:
     push rbx
     push r12
@@ -1128,14 +1043,14 @@ platforms_render:
     cmp byte [r13 + r12], 0
     je .next_platform
 
-    mov ebx, [r14 + r12*4]     ; x plateforme
-    mov edi, [r15 + r12*4]     ; y monde
+    mov ebx, [r14 + r12*4]     
+    mov edi, [r15 + r12*4]    
 
-    ; Convertir en Y écran
+ 
     mov eax, [rel camera_y]
     sub edi, eax
 
-    ; Couleur : flash blanc si hit_timer actif (ne sera plus très visible à cause de la destruction, mais on garde par sécurité)
+
     mov esi, ebp
     lea rax, [rel platforms_hit_timer]
     movzx ecx, byte [rax + r12]
@@ -1146,42 +1061,28 @@ platforms_render:
     mov esi, 0x00FFFFFF
 .no_flash:
 
-    ; ============================================================
-    ; platforms_render inner loop — Scanline SSE2
-    ; Au lieu de 80 pixels × 12 lignes = 960 itérations avec branches,
-    ; on fait 12 fills de ligne (1 check Y + 1 boucle SSE2 de ~20 stores).
-    ; Gain estimé : ×10-20 sur le rendu par plateforme.
-    ; ============================================================
-    mov r8d, PLATFORM_H             ; r8d = compteur ligne (12 → 1)
+    ; scanline SSE2 : 12 lignes, fill 4 pixels/store
+    mov r8d, PLATFORM_H
 .y_loop:
-    ; row_index = PLATFORM_H - r8d  (0..11)
     mov ecx, PLATFORM_H
-    sub ecx, r8d                    ; ecx = row_index
+    sub ecx, r8d                   
 
-    ; screen_y pour cette ligne = edi (top de la plateforme) + row_index
     mov r9d, edi
-    add r9d, ecx                    ; r9d = screen_y
+    add r9d, ecx                  
 
-    ; Bounds Y : skip si hors écran
     cmp r9d, 0
     jl .skip_row
     cmp r9d, SCREEN_H
     jge .skip_row
 
-    ; Marge pour les bords arrondis
     lea rax, [rel plat_margins]
-    movzx r10d, byte [rax + rcx]   ; r10d = margin (0..4)
-
-    ; left_x = plat_x + margin
+    movzx r10d, byte [rax + rcx]   
     mov r11d, ebx
-    add r11d, r10d
-
-    ; right_x = plat_x + PLATFORM_W - margin  (exclusive)
+    add r11d, r10d                
     mov ecx, ebx
     add ecx, PLATFORM_W
-    sub ecx, r10d
+    sub ecx, r10d                  
 
-    ; Clamp X et vérification
     cmp r11d, SCREEN_W
     jge .skip_row
     cmp ecx, 0
@@ -1194,21 +1095,19 @@ platforms_render:
     jle .rx_ok
     mov ecx, SCREEN_W
 .rx_ok:
-    sub ecx, r11d                   ; ecx = largeur réelle à dessiner
+    sub ecx, r11d
     cmp ecx, 0
     jle .skip_row
 
-    ; Adresse destination : backbuffer + (screen_y * SCREEN_W + left_x) * 4
     imul r9d, SCREEN_W
-    add r9d, r11d                   ; r9d = y*800 + left_x
-    lea rax, [rdx + r9*4]          ; rax = pointeur pixel (rdx = backbuffer)
+    add r9d, r11d
+    lea rax, [rdx + r9*4]
 
-    ; --- SSE2 fill : 4 pixels par store ---
     movd xmm0, esi
-    pshufd xmm0, xmm0, 0           ; broadcast couleur → [c,c,c,c]
+    pshufd xmm0, xmm0, 0
 
     mov r10d, ecx
-    shr r10d, 2                     ; r10d = nb stores SSE2 (ecx/4)
+    shr r10d, 2
     jz .scalar_fill
 
 .fill_sse2:
@@ -1218,7 +1117,7 @@ platforms_render:
     jnz .fill_sse2
 
 .scalar_fill:
-    and ecx, 3                      ; pixels restants (0-3)
+    and ecx, 3                      
     jz .skip_row
 .fill_scalar:
     mov dword [rax], esi

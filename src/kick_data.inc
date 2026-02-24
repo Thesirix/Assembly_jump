@@ -1,4 +1,4 @@
-; Export Pro - BPM Reel: 140.100 - Drift: -19.52ms
+; Export  BPM Reel: 140.100 - Drift: -19.52ms
 WavChannels equ 2
 WavRate equ 44100
 global KickData

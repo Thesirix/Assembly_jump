@@ -1,19 +1,19 @@
 BITS 64
 DEFAULT REL
 
-; --- IMPORTS WINAPI ---
+
 extern waveOutOpen, waveOutPrepareHeader, waveOutWrite
 extern waveOutReset, waveOutClose, waveOutUnprepareHeader
 extern GlobalAlloc, RtlMoveMemory
 
-; --- EXPORTS ---
+
 global Audio_Init
 global Audio_Cleanup
 global audio_play_jump
 global audio_update_music
 global audio_stop_music
 
-; --- INCLUSION MUSIQUE DE FOND ---
+
 %include "kick_data.inc"
 
 ; --- CONSTANTES SON DE SAUT ---
@@ -24,7 +24,7 @@ global audio_stop_music
 
 section .data
 
-    ; ---- Format musique de fond (kick_data.inc) ----
+    ; ---- Format musique de fond ----
     wfx:
         dw 1
         dw WavChannels
@@ -36,14 +36,14 @@ section .data
 
     TotalBufferSize equ KickSizeBytes * 4
 
-    ; ---- Format son de saut : 44100 Hz, Mono, 8-bit ----
+
     wfx_jump:
-        dw 1            ; PCM
-        dw 1            ; Mono
+        dw 1            
+        dw 1            
         dd JUMP_RATE
-        dd JUMP_RATE    ; nAvgBytesPerSec = rate * 1 canal * 1 octet
-        dw 1            ; nBlockAlign
-        dw 8            ; 8 bits
+        dd JUMP_RATE  
+        dw 1            
+        dw 8           
         dw 0
 
     ; ---- Constantes FPU pour synthèse "bouing" ----
@@ -83,9 +83,7 @@ section .text
     jnz     %%loop
 %endmacro
 
-; =================================================================
-; start_music_playback (interne)
-; =================================================================
+
 start_music_playback:
     push    rbx
     sub     rsp, 40
@@ -96,8 +94,8 @@ start_music_playback:
     mov     rax, [rel pBuffer]
     mov     [rbx],          rax
     mov     dword [rbx+8],  TotalBufferSize
-    mov     dword [rbx+24], 12      ; WHDR_BEGINLOOP | WHDR_ENDLOOP
-    mov     dword [rbx+28], -1      ; infini
+    mov     dword [rbx+24], 12      
+    mov     dword [rbx+28], -1     
 
     mov     rcx, [rel hWaveOut]
     mov     rdx, rbx
@@ -115,9 +113,7 @@ start_music_playback:
     pop     rbx
     ret
 
-; =================================================================
-; Audio_Init
-; =================================================================
+
 Audio_Init:
     push    rbp
     mov     rbp, rsp
@@ -181,7 +177,7 @@ Audio_Init:
 
     finit
 
-    ; --- 2. ALLOCATION MUSIQUE DE FOND ---
+    ; --- . ALLOCATION MUSIQUE DE FOND ---
     mov     rcx, 0x0040
     mov     rdx, TotalBufferSize
     call    GlobalAlloc
@@ -206,7 +202,7 @@ Audio_Init:
     dec     rbx
     jnz     .fill_loop
 
-    ; --- 3. DEVICE MUSIQUE ---
+    ; ---  DEVICE MUSIQUE ---
     lea     rcx, [rel hWaveOut]
     mov     rdx, -1
     lea     r8,  [rel wfx]
@@ -219,7 +215,7 @@ Audio_Init:
 
     call    start_music_playback
 
-    ; --- 4. DEVICE SON DE SAUT (handle séparé) ---
+    ; ---  DEVICE SON DE SAUT (handle séparé) ---
     lea     rcx, [rel hWaveOut_jump]
     mov     rdx, -1
     lea     r8,  [rel wfx_jump]
@@ -235,9 +231,7 @@ Audio_Init:
     pop     rbp
     ret
 
-; =================================================================
-; Audio_Cleanup
-; =================================================================
+
 Audio_Cleanup:
     sub     rsp, 40
 
@@ -270,9 +264,7 @@ Audio_Cleanup:
     add     rsp, 40
     ret
 
-; =================================================================
-; audio_stop_music
-; =================================================================
+
 audio_stop_music:
     sub     rsp, 40
 
@@ -295,9 +287,7 @@ audio_stop_music:
     add     rsp, 40
     ret
 
-; =================================================================
-; audio_update_music
-; =================================================================
+
 audio_update_music:
     sub     rsp, 40
 
@@ -310,10 +300,8 @@ audio_update_music:
     add     rsp, 40
     ret
 
-; =================================================================
-; audio_play_jump
+
 ; reset -> unprepare -> zero -> prepare -> write a chaque appel
-; =================================================================
 audio_play_jump:
     push    rbx
     push    rdi

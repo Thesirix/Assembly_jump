@@ -1,13 +1,10 @@
 BITS 64
 DEFAULT REL
 
-; =================================================================
 ; stars.asm — Fireflies (Lucioles) parallax + Mouvement brownien
-; =================================================================
 ; Layer 0 : 40 petites lucioles sombres au loin (1x1)
 ; Layer 1 : 30 lucioles moyennes (2x2), pulsation douce
 ; Layer 2 : 20 grosses lucioles (croix 3x3 avec centre blanc)
-; =================================================================
 
 global stars_init
 global stars_render
@@ -29,7 +26,7 @@ section .data
 
 star_seed dd 31337
 
-; Couleurs Zelda / Forêt (Format GDI : 0x00RRGGBB)
+
 star_color0 dd 0x00113311      ; Vert sombre (lointaines)
 star_color1 dd 0x00338822      ; Vert forêt (moyennes)
 star_color2 dd 0x0099FF33      ; Jaune-vert vif (proches)
@@ -38,16 +35,14 @@ section .bss
 
 star_x      resd TOTAL_STARS
 star_y      resd TOTAL_STARS
-star_vx     resd TOTAL_STARS   ; Vélocité X pour la dérive
-star_vy     resd TOTAL_STARS   ; Vélocité Y pour la dérive
-star_phase  resb TOTAL_STARS   ; Phase de pulsation (0..255)
-star_tick   resd 1             ; Compteur global pour ralentir la dérive
+star_vx     resd TOTAL_STARS   
+star_vy     resd TOTAL_STARS   
+star_phase  resb TOTAL_STARS  
+star_tick   resd 1             
 
 section .text
 
-; ============================================================
-; star_random — LCG
-; ============================================================
+
 star_random:
     push rbx
     mov eax, [rel star_seed]
@@ -60,9 +55,7 @@ star_random:
     pop rbx
     ret
 
-; ============================================================
-; stars_init — Générer positions, phases et vélocités
-; ============================================================
+
 stars_init:
     push rbx
     push r12
@@ -127,9 +120,7 @@ stars_init:
     pop rbx
     ret
 
-; ============================================================
-; stars_render — Rendu des lucioles avec dérive organique
-; ============================================================
+;Rendu des lucioles avec dérive organique
 stars_render:
     push rbx
     push r12
@@ -140,7 +131,7 @@ stars_render:
     push rbp
     sub rsp, 40
 
-    ; --- 1. MISE À JOUR : MOUVEMENT BROWNIEN LENT ---
+    ; --- MOUVEMENT BROWNIEN LENT ---
     inc dword [rel star_tick]
     xor ebx, ebx
     lea r14, [rel star_vx]
@@ -155,15 +146,15 @@ stars_render:
     test eax, 63
     jnz .apply_vel
 
-    ; Changer vx (-1, 0, ou +1)
+
     call star_random
     xor edx, edx
     mov ecx, 3
     div ecx
-    sub edx, 1                  ; edx = -1, 0, 1
+    sub edx, 1                  
     mov eax, [r14 + rbx*4]
     add eax, edx
-    ; Clamp vélocité X entre -1 et 1
+    
     cmp eax, -1
     jge .vx_min
     mov eax, -1
@@ -174,7 +165,7 @@ stars_render:
 .vx_max:
     mov [r14 + rbx*4], eax
 
-    ; Changer vy (-1, 0, ou +1)
+
     call star_random
     xor edx, edx
     mov ecx, 3
@@ -182,7 +173,7 @@ stars_render:
     sub edx, 1
     mov eax, [r15 + rbx*4]
     add eax, edx
-    ; Clamp vélocité Y entre -1 et 1
+
     cmp eax, -1
     jge .vy_min
     mov eax, -1
@@ -194,23 +185,21 @@ stars_render:
     mov [r15 + rbx*4], eax
 
 .apply_vel:
-    ; Pour que ce soit très lent, on n'applique la vélocité qu'une frame sur 8
+    
     test dword [rel star_tick], 7
     jnz .skip_move
-
-    ; Appliquer la vélocité sur X (avec wrap aux bords de l'écran)
     lea r12, [rel star_x]
     mov eax, [r12 + rbx*4]
     add eax, [r14 + rbx*4]
     
     cmp eax, 0
     jge .chk_w
-    add eax, SCREEN_W           ; Wrap par la gauche
+    add eax, SCREEN_W           
     jmp .save_x
 .chk_w:
     cmp eax, SCREEN_W
     jl .save_x
-    sub eax, SCREEN_W           ; Wrap par la droite
+    sub eax, SCREEN_W           
 .save_x:
     mov [r12 + rbx*4], eax
 
@@ -224,7 +213,7 @@ stars_render:
     inc ebx
     jmp .update_loop
 
-    ; --- 2. RENDU DES LAYERS (PARALLAX PLUS PROFOND) ---
+    ; ---  RENDU DES LAYERS (PARALLAX PLUS PROFOND) ---
 .render_layers:
     lea rsi, [rel backbuffer]
     lea r14, [rel star_x]
@@ -360,7 +349,7 @@ stars_render:
 .l2_pos:
     cmp eax, SCREEN_H - 1
     jge .l2_next
-    cmp eax, 1                  ; Marge requise pour dessiner la croix
+    cmp eax, 1                  
     jl .l2_next
 
     mov ecx, [r14 + rbx*4]
@@ -369,15 +358,15 @@ stars_render:
     cmp ecx, SCREEN_W - 2
     jge .l2_next
 
-    ; Pulsation "respiration" très lente
+
     lea r13, [rel star_phase]
     movzx edx, byte [r13 + rbx]
     mov ecx, edx
-    shr ecx, 3                  ; Ralenti par 8
+    shr ecx, 3                  
     and ecx, 0x0F
     
-    mov r13d, [rel star_color2] ; Bordure de la luciole (halo)
-    mov ebp, 0x00CCFF77         ; Centre de la luciole
+    mov r13d, [rel star_color2] 
+    mov ebp, 0x00CCFF77         
     
     cmp ecx, 14                 ; Pic de respiration
     jl .l2_draw
@@ -400,18 +389,18 @@ stars_render:
     add eax, ecx
     mov edx, r13d
     
-    ; Dessiner la croix (Bords = Halo edx, Centre = ebp pur)
-    mov [rsi + rax*4 - 4], edx          ; Gauche
-    mov [rsi + rax*4 + 4], edx          ; Droite
-    mov [rsi + rax*4], ebp              ; Centre
+   
+    mov [rsi + rax*4 - 4], edx          
+    mov [rsi + rax*4 + 4], edx         
+    mov [rsi + rax*4], ebp              
     
     mov r8d, eax
     sub r8d, SCREEN_W
-    mov [rsi + r8*4], edx               ; Haut
+    mov [rsi + r8*4], edx               
     
     mov r8d, eax
     add r8d, SCREEN_W
-    mov [rsi + r8*4], edx               ; Bas
+    mov [rsi + r8*4], edx               
 
 .l2_next:
     inc ebx
