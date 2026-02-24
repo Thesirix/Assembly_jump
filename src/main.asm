@@ -82,7 +82,7 @@ extern particles_render
 
 section .data
 class_name   db "DoodleAsmWnd", 0
-window_title db "Doodle Jump - Assembly", 0
+window_title db "Assembly Jump", 0
 
 bmi:
     dd 40
