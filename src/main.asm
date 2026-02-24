@@ -24,7 +24,7 @@ extern StretchDIBits
 ; --- Timer précision ---
 extern QueryPerformanceCounter
 extern QueryPerformanceFrequency
-extern timeBeginPeriod          ; winmm.lib (déjà linké)
+extern timeBeginPeriod          
 
 ; --- Threading ---
 extern WaitForSingleObject
@@ -35,7 +35,7 @@ extern evt_frame_ready
 extern evt_render_done
 extern thread_shutdown
 
-; --- AUDIO (noms du nouveau projet qui fonctionne) ---
+
 extern Audio_Init
 extern Audio_Cleanup
 
@@ -65,7 +65,7 @@ extern particles_render
 %define CS_VREDRAW      0x0001
 %define IDC_ARROW       32512
 %define SW_SHOW         5
-; WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX (pas de resize)
+; (pas de resize)
 %define WS_FIXED_WINDOW     0x00C80000
 %define CW_USEDEFAULT   0x80000000
 %define WM_DESTROY      0x0002
@@ -146,27 +146,20 @@ accumulator     resq 1   ; µs accumulées (physique)
 
 section .text
 
-; ============================================================
-; AVX2 clear backbuffer — 8 pixels per instruction (256-bit)
-; 800×600 = 480,000 pixels / 8 = 60,000 vmovdqu stores
-; ~4× faster than rep stosd
-; ============================================================
+; --- AVX2 clear : 8 pixels/store, 60k iterations ---
 clear_backbuffer:
     lea rdi, [rel backbuffer]
 
-    ; Broadcast sky color to all 8 dword lanes of YMM0
-    mov eax, 0x0087CEEB             ; Sky blue
+    mov eax, 0x0087CEEB
     movd xmm0, eax
-    vpbroadcastd ymm0, xmm0        ; YMM0 = [sky, sky, sky, sky, sky, sky, sky, sky]
-
-    mov rcx, SCREEN_W * SCREEN_H / 8   ; 60,000 iterations
+    vpbroadcastd ymm0, xmm0
+    mov rcx, SCREEN_W * SCREEN_H / 8
 .avx_loop:
-    vmovdqu [rdi], ymm0            ; Store 8 pixels (32 bytes)
+    vmovdqu [rdi], ymm0
     add rdi, 32
     dec rcx
     jnz .avx_loop
-
-    vzeroupper                      ; Clean YMM state for SSE compatibility
+    vzeroupper
     ret
 
 draw_player:
@@ -244,12 +237,11 @@ WndProc:
     mov eax, [rel game_over]
     cmp eax, 1
     jne .def
-    ; r10 = registre volatile (pas besoin de sauvegarder), remplace rbx
-    mov r10, r9                    ; r10 = lParam (X bas 16 bits, Y haut 16 bits)
+    mov r10, r9
     mov rax, r10
-    and r10d, 0xFFFF               ; r10d = X écran
+    and r10d, 0xFFFF               
     shr rax, 16
-    and eax, 0xFFFF                ; eax  = Y écran
+    and eax, 0xFFFF                
     cmp r10d, 200
     jl .def
     cmp r10d, 600
@@ -258,8 +250,6 @@ WndProc:
     jl .def
     cmp eax, 450
     jg .def
-    ; Win64 : shadow space obligatoire + RSP doit être ≡0 mod16 avant call
-    ; Entrée WndProc : RSP≡8. sub 40 (40 mod16=8) → RSP≡0. OK.
     sub rsp, 40
     call game_init
     add rsp, 40
@@ -268,7 +258,7 @@ WndProc:
 .check_destroy:
     cmp edx, WM_DESTROY
     jne .check_paint
-    sub rsp, 40                    ; shadow space + alignement (RSP≡8→0 avant call)
+    sub rsp, 40
     xor ecx, ecx
     call PostQuitMessage
     add rsp, 40
@@ -277,7 +267,7 @@ WndProc:
 .check_paint:
     cmp edx, WM_PAINT
     jne .def
-    ; Render thread handles StretchDIBits via GetDC — just validate the region
+   
     sub rsp, 40
     mov r10, rcx
     lea rdx, [rel ps]
@@ -301,7 +291,7 @@ Start:
     call LoadCursorA
     mov r13, rax
 
-    ; --- AUDIO INIT (noms du nouveau) ---
+
     call Audio_Init
 
     ; --- Résolution timer Windows → 1ms ---
@@ -375,51 +365,35 @@ game_loop:
     jmp .msg
 
 .frame:
-    ; ============================================================
-    ; FIXED TIMESTEP ACCUMULATOR  (méthode Unity/Unreal)
-    ; ------------------------------------------------------------
-    ; 1. Mesurer le temps réel écoulé depuis la dernière frame
-    ; 2. L'ajouter à l'accumulateur
-    ; 3. Consommer des tranches de 16 666 µs = 1 tick physique
-    ;    → game_update() tourne TOUJOURS à exactement 60Hz
-    ;    → que le PC fasse 30 FPS ou 500 FPS, la physique est identique
-    ; ============================================================
-
-    ; --- Lire l'horloge maintenant ---
+    ; --- fixed timestep (QPC) ---
     lea rcx, [rel qpc_now_buf]
     call QueryPerformanceCounter
 
-    ; --- delta_ticks = now - last ---
     mov rax, [rel qpc_now_buf]
     mov rdx, [rel qpc_last]
-    sub rax, rdx                    ; rax = ticks écoulés
+    sub rax, rdx
 
-    ; --- Sauvegarder last = now ---
     mov rdx, [rel qpc_now_buf]
     mov [rel qpc_last], rdx
 
-    ; --- delta_us = delta_ticks * 1 000 000 / freq ---
     imul rax, 1000000
     xor rdx, rdx
-    div qword [rel qpc_freq]        ; rax = microsecondes réelles
+    div qword [rel qpc_freq]
 
-    ; --- Plafond à 33 333 µs (30 FPS min) ---
-    ; Évite la "spiral of death" si le jeu lag une frame
+    ; plafond 28ms time cheating
     cmp rax, 28000
     jle .add_accum
     mov rax, 28000
 .add_accum:
-    add [rel accumulator], rax      ; accumuler le temps réel
+    add [rel accumulator], rax
 
-    ; --- Consommer des ticks fixes de 16 666 µs ---
-    ; Chaque tick = 1 appel à game_update (physique à 60Hz fixe)
 .tick_loop:
     cmp qword [rel accumulator], 28000
-    jl  .render                     ; pas assez → aller au rendu
+    jl  .render
 
     sub qword [rel accumulator], 28000
 
-    ; Appel game_update ou gestion game_over
+  
     mov eax, [rel game_over]
     cmp eax, 1
     je .handle_gameover_tick
@@ -436,11 +410,9 @@ game_loop:
     jmp .tick_loop
 
 .render:
-    ; Dégradé de ciel SIMD (remplace clear_backbuffer)
     call sky_render
     call stars_render
     call platforms_render
-    ; Mise à jour et rendu des particules de désintégration
     call particles_update
     call particles_render
     call draw_player
@@ -451,24 +423,21 @@ game_loop:
     call draw_game_over
 
 .submit_frame:
-    ; --- Double-buffer : copier backbuffer → front_buffer si render thread prêt ---
-    ; Non-blocking check: is the render thread done with the previous frame?
     sub rsp, 40
     mov rcx, [rel evt_render_done]
-    xor edx, edx                   ; 0 = no wait, just check
+    xor edx, edx
     call WaitForSingleObject
     add rsp, 40
-    cmp eax, 258                    ; WAIT_TIMEOUT = render still busy
-    je .skip_copy                   ; Skip copy, reuse old front_buffer
+    cmp eax, 258                    ; WAIT_TIMEOUT : render thread encore occupé
+    je .skip_copy
 
-    ; Copy backbuffer → front_buffer — AVX2 : 8 pixels/store (×4 vs rep movsd)
-    ; 800×600 × 4 bytes = 1 920 000 bytes → 60 000 stores de 32 bytes
+    ; copie backbuffer -> front_buffer (AVX2)
     push rsi
     push rdi
     push rcx
     lea rsi, [rel backbuffer]
     lea rdi, [rel front_buffer]
-    mov rcx, SCREEN_W * SCREEN_H / 8   ; 60 000 itérations AVX2
+    mov rcx, SCREEN_W * SCREEN_H / 8
 .avx_fb_copy:
     vmovdqu ymm0, [rsi]
     vmovdqu [rdi], ymm0
@@ -495,10 +464,10 @@ game_loop:
     jmp game_loop
 
 .quit:
-    ; --- Shutdown worker threads (render, audio, platgen) ---
+  
     call threads_shutdown
 
-    ; --- AUDIO CLEANUP (noms du nouveau) ---
+
     call Audio_Cleanup
     xor ecx, ecx
     call ExitProcess
