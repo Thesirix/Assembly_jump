@@ -9,8 +9,15 @@ global random
 global highest_platform_y
 global highest_platform_x
 global rand_seed
-global particles_update
-global particles_render
+
+; Données particules exportées → utilisées par particles.asm
+global part_x
+global part_y
+global part_vx
+global part_vy
+global part_life
+global part_color
+global part_grav_tick
 
 extern backbuffer
 extern player_x
@@ -1090,198 +1097,8 @@ emit_particles:
     pop r12
     ret
 
-; ============================================================
-; particles_update — Physique des particules
-; ============================================================
-particles_update:
-    push rbx
-    push r12
-    xor r12d, r12d
-
-    ; Incrémenter le compteur de gravité douce
-    inc dword [rel part_grav_tick]
-
-.loop:
-    cmp r12d, MAX_PARTICLES
-    jge .done
-
-    lea rbx, [rel part_life]
-    cmp byte [rbx + r12], 0
-    je .next
-
-    ; Décrémenter la durée de vie
-    dec byte [rbx + r12]
-
-    ; x += vx
-    lea rbx, [rel part_vx]
-    mov eax, [rbx + r12*4]
-    lea rbx, [rel part_x]
-    add [rbx + r12*4], eax
-
-    ; y += vy
-    lea rbx, [rel part_vy]
-    mov eax, [rbx + r12*4]
-    lea rbx, [rel part_y]
-    add [rbx + r12*4], eax
-
-    ; Gravité douce : vy += 1 seulement tous les 3 frames
-    mov eax, [rel part_grav_tick]
-    mov edx, 0
-    mov ecx, 3
-    div ecx
-    test edx, edx
-    jnz .next                   ; pas le bon frame → skip
-
-    lea rbx, [rel part_vy]
-    inc dword [rbx + r12*4]     ; vy += 1 (1 fois sur 3)
-
-.next:
-    inc r12d
-    jmp .loop
-.done:
-    pop r12
-    pop rbx
-    ret
-
-; ============================================================
-; particles_render — Taille adaptative selon la durée de vie
-; ============================================================
-particles_render:
-    push rbx
-    push r12
-    push r13
-    push r14
-    push r15
-    push rbp
-
-    lea rbp, [rel backbuffer]
-    xor r12d, r12d
-
-.loop:
-    cmp r12d, MAX_PARTICLES
-    jge .done
-
-    lea rbx, [rel part_life]
-    movzx eax, byte [rbx + r12]
-    test eax, eax
-    jz .next
-
-    lea rbx, [rel part_x]
-    mov r13d, [rbx + r12*4]     ; r13d = x
-    lea rbx, [rel part_y]
-    mov r14d, [rbx + r12*4]     ; r14d = y
-
-    ; Bounds check conservateur (3×3 max → marge 3)
-    cmp r13d, 0
-    jl .next
-    cmp r13d, SCREEN_W - 3
-    jge .next
-    cmp r14d, 0
-    jl .next
-    cmp r14d, SCREEN_H - 3
-    jge .next
-
-    ; --- Calculer couleur avec fade ---
-    lea rbx, [rel part_color]
-    mov r15d, [rbx + r12*4]     ; couleur originale
-
-    lea rbx, [rel part_life]
-    movzx eax, byte [rbx + r12] ; eax = life (0..60)
-
-    ; Intensité = life * 4 (max 240), divise chaque composante
-    mov ecx, eax
-    imul ecx, 255
-    xor edx, edx
-    mov ebx, 60
-    div ebx                     ; eax = life*255/60 = [0,255]
-    mov ebx, eax                ; ebx = fade factor [0,255]
-
-    ; Appliquer le fade à chaque composante
-    ; R
-    mov eax, r15d
-    and eax, 0xFF
-    imul eax, ebx
-    xor edx, edx
-    mov ecx, 255
-    div ecx
-    mov esi, eax                ; R final
-
-    ; G
-    mov eax, r15d
-    shr eax, 8
-    and eax, 0xFF
-    imul eax, ebx
-    xor edx, edx
-    mov ecx, 255
-    div ecx
-    shl eax, 8
-    or esi, eax                 ; |= G<<8
-
-    ; B
-    mov eax, r15d
-    shr eax, 16
-    and eax, 0xFF
-    imul eax, ebx
-    xor edx, edx
-    mov ecx, 255
-    div ecx
-    shl eax, 16
-    or esi, eax                 ; |= B<<16
-
-    ; --- Calculer adresse de base ---
-    mov eax, r14d
-    imul eax, SCREEN_W
-    add eax, r13d               ; eax = y*800 + x
-
-    ; --- Choisir la taille selon life ---
-    lea rbx, [rel part_life]
-    movzx ecx, byte [rbx + r12]
-
-    cmp ecx, 40
-    jg .size_3x3                ; life > 40 → 3×3
-    cmp ecx, 20
-    jg .size_2x2                ; life > 20 → 2×2
-    jmp .size_1x1               ; life <= 20 → 1×1
-
-.size_3x3:
-    ; Dessiner 3 lignes × 3 colonnes = 9 pixels
-    mov [rbp + rax*4       ], esi
-    mov [rbp + rax*4 + 4   ], esi
-    mov [rbp + rax*4 + 8   ], esi
-    lea edx, [eax + SCREEN_W]
-    mov [rbp + rdx*4       ], esi
-    mov [rbp + rdx*4 + 4   ], esi
-    mov [rbp + rdx*4 + 8   ], esi
-    lea edx, [eax + SCREEN_W*2]
-    mov [rbp + rdx*4       ], esi
-    mov [rbp + rdx*4 + 4   ], esi
-    mov [rbp + rdx*4 + 8   ], esi
-    jmp .next
-
-.size_2x2:
-    ; Dessiner 2 lignes × 2 colonnes = 4 pixels
-    mov [rbp + rax*4    ], esi
-    mov [rbp + rax*4 + 4], esi
-    lea edx, [eax + SCREEN_W]
-    mov [rbp + rdx*4    ], esi
-    mov [rbp + rdx*4 + 4], esi
-    jmp .next
-
-.size_1x1:
-    ; Dessiner 1 pixel
-    mov [rbp + rax*4], esi
-
-.next:
-    inc r12d
-    jmp .loop
-.done:
-    pop rbp
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbx
-    ret
+; particles_update et particles_render → déplacés dans particles.asm
+; (refactoring + optimisations SIMD : 4 particules/iter, 0 div)
 
 ; ============================================================
 ; platforms_render — Rendu avec couleur HSV, forme arrondie
@@ -1329,53 +1146,87 @@ platforms_render:
     mov esi, 0x00FFFFFF
 .no_flash:
 
-    mov r8d, PLATFORM_H
+    ; ============================================================
+    ; platforms_render inner loop — Scanline SSE2
+    ; Au lieu de 80 pixels × 12 lignes = 960 itérations avec branches,
+    ; on fait 12 fills de ligne (1 check Y + 1 boucle SSE2 de ~20 stores).
+    ; Gain estimé : ×10-20 sur le rendu par plateforme.
+    ; ============================================================
+    mov r8d, PLATFORM_H             ; r8d = compteur ligne (12 → 1)
 .y_loop:
-
-    ; --- NOUVEAU : Lire la marge pour créer la forme arrondie ---
+    ; row_index = PLATFORM_H - r8d  (0..11)
     mov ecx, PLATFORM_H
-    sub ecx, r8d                 ; ecx = index de la ligne courante (0 à 11)
+    sub ecx, r8d                    ; ecx = row_index
+
+    ; screen_y pour cette ligne = edi (top de la plateforme) + row_index
+    mov r9d, edi
+    add r9d, ecx                    ; r9d = screen_y
+
+    ; Bounds Y : skip si hors écran
+    cmp r9d, 0
+    jl .skip_row
+    cmp r9d, SCREEN_H
+    jge .skip_row
+
+    ; Marge pour les bords arrondis
     lea rax, [rel plat_margins]
-    movzx r11d, byte [rax + rcx] ; r11d = marge pour cette ligne (ex: 4 pixels aux extrémités)
+    movzx r10d, byte [rax + rcx]   ; r10d = margin (0..4)
 
-    mov r9d, PLATFORM_W
-.x_loop:
+    ; left_x = plat_x + margin
+    mov r11d, ebx
+    add r11d, r10d
 
-    ; --- NOUVEAU : Ignorer les pixels situés dans la marge ---
-    cmp r9d, r11d
-    jle .skip_pixel              ; Skip les pixels sur le bord droit
-    mov eax, PLATFORM_W
-    sub eax, r11d
-    cmp r9d, eax
-    jg .skip_pixel               ; Skip les pixels sur le bord gauche
+    ; right_x = plat_x + PLATFORM_W - margin  (exclusive)
+    mov ecx, ebx
+    add ecx, PLATFORM_W
+    sub ecx, r10d
 
-    ; --- Rendu classique du pixel ---
-    mov eax, edi
-    add eax, PLATFORM_H
-    sub eax, r8d
+    ; Clamp X et vérification
+    cmp r11d, SCREEN_W
+    jge .skip_row
+    cmp ecx, 0
+    jle .skip_row
+    cmp r11d, 0
+    jge .lx_ok
+    xor r11d, r11d
+.lx_ok:
+    cmp ecx, SCREEN_W
+    jle .rx_ok
+    mov ecx, SCREEN_W
+.rx_ok:
+    sub ecx, r11d                   ; ecx = largeur réelle à dessiner
+    cmp ecx, 0
+    jle .skip_row
 
-    cmp eax, 0
-    jl .skip_pixel
-    cmp eax, SCREEN_H
-    jge .skip_pixel
+    ; Adresse destination : backbuffer + (screen_y * SCREEN_W + left_x) * 4
+    imul r9d, SCREEN_W
+    add r9d, r11d                   ; r9d = y*800 + left_x
+    lea rax, [rdx + r9*4]          ; rax = pointeur pixel (rdx = backbuffer)
 
-    imul eax, SCREEN_W
+    ; --- SSE2 fill : 4 pixels par store ---
+    movd xmm0, esi
+    pshufd xmm0, xmm0, 0           ; broadcast couleur → [c,c,c,c]
 
-    mov r10d, ebx
-    add r10d, PLATFORM_W
-    sub r10d, r9d
+    mov r10d, ecx
+    shr r10d, 2                     ; r10d = nb stores SSE2 (ecx/4)
+    jz .scalar_fill
 
-    cmp r10d, 0
-    jl .skip_pixel
-    cmp r10d, SCREEN_W
-    jge .skip_pixel
+.fill_sse2:
+    movdqu [rax], xmm0
+    add rax, 16
+    dec r10d
+    jnz .fill_sse2
 
-    add eax, r10d
-    mov [rdx + rax*4], esi
+.scalar_fill:
+    and ecx, 3                      ; pixels restants (0-3)
+    jz .skip_row
+.fill_scalar:
+    mov dword [rax], esi
+    add rax, 4
+    dec ecx
+    jnz .fill_scalar
 
-.skip_pixel:
-    dec r9d
-    jnz .x_loop
+.skip_row:
     dec r8d
     jnz .y_loop
 

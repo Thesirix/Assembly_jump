@@ -532,28 +532,60 @@ sky_render:
     and eax, 0xFF
     mov ebx, eax                    ; ebx = top_B
 
-    ; delta_R = (bot_R - top_R) << 8  → push
+    ; ============================================================
+    ; Optimisation sky_render : accumulation incrémentale + AVX2 fill
+    ;
+    ; AVANT : 3 × idiv (600) par ligne × 600 lignes = 1800 idiv/frame
+    ;         200 movdqu SSE2 par ligne (4 pixels)
+    ;
+    ; APRÈS : 3 idiv UNE SEULE FOIS (calcul du pas), puis additions
+    ;         100 vmovdqu AVX2 par ligne (8 pixels) → ×2 sur le fill
+    ;
+    ; Gain total estimé : ×8-15 sur sky_render
+    ; ============================================================
+
+    ; --- Pré-calculer step_R, step_G, step_B (3 idiv, faits UNE SEULE FOIS) ---
+    ; step = (bot - top) * 256 / SCREEN_H  (point fixe 8.8)
+    ; Chaque ligne ajoute le step à l'accumulateur.
+    ; Résultat par ligne : top + (acc >> 8)
+
+    ; step_R
     mov eax, r13d
     shr eax, 16
-    and eax, 0xFF
-    sub eax, ebp
-    shl eax, 8
-    push rax                        ; [rsp+?] = delta_R<<8
+    and eax, 0xFF                   ; bot_R
+    sub eax, ebp                    ; delta_R = bot_R - top_R
+    shl eax, 8                      ; delta_R << 8
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx                        ; step_R (8.8 fixe)
+    push rax                        ; [rsp+24] = step_R
 
-    ; delta_G = (bot_G - top_G) << 8  → push
+    ; step_G
     mov eax, r13d
     shr eax, 8
-    and eax, 0xFF
-    sub eax, esi
+    and eax, 0xFF                   ; bot_G
+    sub eax, esi                    ; delta_G
     shl eax, 8
-    push rax                        ; [rsp+?] = delta_G<<8
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx                        ; step_G
+    push rax                        ; [rsp+16] = step_G
 
-    ; delta_B = (bot_B - top_B) << 8  → push
+    ; step_B
     mov eax, r13d
-    and eax, 0xFF
-    sub eax, ebx
+    and eax, 0xFF                   ; bot_B
+    sub eax, ebx                    ; delta_B
     shl eax, 8
-    push rax                        ; [rsp] = delta_B<<8
+    cdq
+    mov ecx, SCREEN_H
+    idiv ecx                        ; step_B
+    push rax                        ; [rsp+8] = step_B
+
+    ; acc_B sur le stack (mutable chaque ligne), acc_R et acc_G dans r12d/r13d
+    xor eax, eax
+    push rax                        ; [rsp+0] = acc_B = 0
+    xor r12d, r12d                  ; acc_R = 0  (r12d libéré après extraction)
+    xor r13d, r13d                  ; acc_G = 0  (r13d libéré après extraction)
 
     ; --- Boucle sur 600 lignes ---
     xor r14d, r14d                  ; r14d = ligne courante (0..599)
@@ -562,14 +594,10 @@ sky_render:
     cmp r14d, SCREEN_H
     jge .sky_done
 
-    ; R(y) = top_R + delta_R * y / 600
-    mov eax, [rsp + 16]             ; delta_R<<8
-    imul eax, r14d
-    cdq
-    mov ecx, SCREEN_H
-    idiv ecx
+    ; R(y) = top_R + (acc_R >> 8)
+    mov eax, r12d
     sar eax, 8
-    add eax, ebp                    ; + top_R
+    add eax, ebp                    ; + top_R (ebp)
     cmp eax, 0
     jge .sr_pos
     xor eax, eax
@@ -578,17 +606,13 @@ sky_render:
     jle .sr_ok
     mov eax, 255
 .sr_ok:
-    shl eax, 16                     ; On décale le R vers sa place
-    mov r15d, eax                   ; R final
+    shl eax, 16
+    mov r15d, eax
 
-    ; G(y) = top_G + delta_G * y / 600
-    mov eax, [rsp + 8]              ; delta_G<<8
-    imul eax, r14d
-    cdq
-    mov ecx, SCREEN_H
-    idiv ecx
+    ; G(y) = top_G + (acc_G >> 8)
+    mov eax, r13d
     sar eax, 8
-    add eax, esi                    ; + top_G
+    add eax, esi                    ; + top_G (esi)
     cmp eax, 0
     jge .sg_pos
     xor eax, eax
@@ -598,16 +622,12 @@ sky_render:
     mov eax, 255
 .sg_ok:
     shl eax, 8
-    or r15d, eax                    ; |= G<<8
+    or r15d, eax
 
-    ; B(y) = top_B + delta_B * y / 600
-    mov eax, [rsp]                  ; delta_B<<8
-    imul eax, r14d
-    cdq
-    mov ecx, SCREEN_H
-    idiv ecx
+    ; B(y) = top_B + (acc_B >> 8)
+    mov eax, dword [rsp]            ; acc_B
     sar eax, 8
-    add eax, ebx                    ; + top_B
+    add eax, ebx                    ; + top_B (ebx)
     cmp eax, 0
     jge .sb_pos
     xor eax, eax
@@ -616,22 +636,29 @@ sky_render:
     jle .sb_ok
     mov eax, 255
 .sb_ok:
-    or r15d, eax                    ; |= B (pas de décalage pour le B)
+    or r15d, eax
 
-    ; --- SSE2 : remplir 800 pixels de cette ligne (4 pixels par store) ---
+    ; --- Incrémenter les accumulateurs (additions, pas de divisions) ---
+    mov ecx, dword [rsp+24]         ; step_R
+    add r12d, ecx
+    mov ecx, dword [rsp+16]         ; step_G
+    add r13d, ecx
+    mov ecx, dword [rsp+8]          ; step_B
+    add dword [rsp], ecx            ; acc_B += step_B
+
+    ; --- AVX2 : remplir 800 pixels (8 pixels par store = 100 stores) ---
+    ; Gain ×2 vs SSE2 (200 movdqu → 100 vmovdqu)
     movd xmm0, r15d
-    pshufd xmm0, xmm0, 0           ; broadcast : [color, color, color, color]
+    vpbroadcastd ymm0, xmm0        ; 8 pixels broadcast 256-bit
 
-    ; Adresse de début de ligne
     mov eax, r14d
     imul eax, SCREEN_W
     lea rcx, [rdi + rax*4]
 
-    ; 800 pixels / 4 = 200 stores SSE2
-    mov edx, 200
+    mov edx, 100                    ; 800 / 8 = 100 stores AVX2
 .sky_fill:
-    movdqu [rcx], xmm0             ; stocker 4 pixels = 16 bytes
-    add rcx, 16
+    vmovdqu [rcx], ymm0
+    add rcx, 32
     dec edx
     jnz .sky_fill
 
@@ -639,7 +666,8 @@ sky_render:
     jmp .sky_line
 
 .sky_done:
-    add rsp, 24                     ; libérer les 3 push delta (3*8=24)
+    vzeroupper                      ; nettoyer état YMM (compatibilité SSE)
+    add rsp, 32                     ; libérer 4 push × 8 = 32 bytes
 
     add rsp, 40                     ; libérer le sub rsp initial (doit matcher sub rsp, 40)
     pop rdi

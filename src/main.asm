@@ -461,14 +461,22 @@ game_loop:
     cmp eax, 258                    ; WAIT_TIMEOUT = render still busy
     je .skip_copy                   ; Skip copy, reuse old front_buffer
 
-    ; Copy backbuffer → front_buffer (800×600 dwords = 1,920,000 bytes)
+    ; Copy backbuffer → front_buffer — AVX2 : 8 pixels/store (×4 vs rep movsd)
+    ; 800×600 × 4 bytes = 1 920 000 bytes → 60 000 stores de 32 bytes
     push rsi
     push rdi
     push rcx
     lea rsi, [rel backbuffer]
     lea rdi, [rel front_buffer]
-    mov rcx, SCREEN_W * SCREEN_H
-    rep movsd
+    mov rcx, SCREEN_W * SCREEN_H / 8   ; 60 000 itérations AVX2
+.avx_fb_copy:
+    vmovdqu ymm0, [rsi]
+    vmovdqu [rdi], ymm0
+    add rsi, 32
+    add rdi, 32
+    dec rcx
+    jnz .avx_fb_copy
+    vzeroupper
     pop rcx
     pop rdi
     pop rsi
